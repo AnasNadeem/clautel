@@ -19,6 +19,13 @@ const AUTO_APPROVE_TOOLS = [
   "AskUserQuestion",
 ];
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+}
+
 export interface SendCallbacks {
   onStreamChunk: (text: string) => void;
   onToolApproval: (
@@ -27,7 +34,7 @@ export interface SendCallbacks {
   ) => Promise<boolean>;
   onResult: (result: {
     text: string;
-    costUsd: number;
+    usage: TokenUsage;
     turns: number;
     durationMs: number;
   }) => void;
@@ -44,8 +51,8 @@ const DEFAULT_MODEL = AVAILABLE_MODELS[0].id;
 
 // chatId → Claude sessionId
 const sessions = new Map<number, string>();
-// chatId → total cost accumulated
-const sessionCosts = new Map<number, number>();
+// chatId → total tokens accumulated
+const sessionTokens = new Map<number, TokenUsage>();
 // chatId → AbortController for active query
 const activeAborts = new Map<number, AbortController>();
 // chatId → selected model
@@ -55,13 +62,13 @@ export function isProcessing(chatId: number): boolean {
   return activeAborts.has(chatId);
 }
 
-export function getSessionCost(chatId: number): number {
-  return sessionCosts.get(chatId) || 0;
+export function getSessionTokens(chatId: number): TokenUsage {
+  return sessionTokens.get(chatId) || { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 };
 }
 
 export function clearSession(chatId: number): void {
   sessions.delete(chatId);
-  sessionCosts.delete(chatId);
+  sessionTokens.delete(chatId);
 }
 
 export function setModel(chatId: number, modelId: string): void {
@@ -154,15 +161,28 @@ export async function sendMessage(
         }
       } else if (message.type === "result") {
         if (message.subtype === "success") {
-          const cost = (message as Record<string, unknown>).total_cost_usd as number || 0;
-          const prev = sessionCosts.get(chatId) || 0;
-          sessionCosts.set(chatId, prev + cost);
+          const msg = message as Record<string, unknown>;
+          const rawUsage = msg.usage as Record<string, number> | undefined;
+          const usage: TokenUsage = {
+            inputTokens: rawUsage?.input_tokens || 0,
+            outputTokens: rawUsage?.output_tokens || 0,
+            cacheCreationTokens: rawUsage?.cache_creation_input_tokens || 0,
+            cacheReadTokens: rawUsage?.cache_read_input_tokens || 0,
+          };
+
+          const prev = sessionTokens.get(chatId) || { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 };
+          sessionTokens.set(chatId, {
+            inputTokens: prev.inputTokens + usage.inputTokens,
+            outputTokens: prev.outputTokens + usage.outputTokens,
+            cacheCreationTokens: prev.cacheCreationTokens + usage.cacheCreationTokens,
+            cacheReadTokens: prev.cacheReadTokens + usage.cacheReadTokens,
+          });
 
           callbacks.onResult({
-            text: (message as Record<string, unknown>).result as string || "",
-            costUsd: cost,
-            turns: (message as Record<string, unknown>).num_turns as number || 0,
-            durationMs: (message as Record<string, unknown>).duration_ms as number || 0,
+            text: msg.result as string || "",
+            usage,
+            turns: msg.num_turns as number || 0,
+            durationMs: msg.duration_ms as number || 0,
           });
         } else {
           const errors = (message as Record<string, unknown>).errors as string[] | undefined;
