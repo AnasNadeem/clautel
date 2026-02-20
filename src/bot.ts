@@ -13,6 +13,9 @@ import {
   getSessionId,
   setWorkingDir,
   getWorkingDir,
+  isCoolingDown,
+  setLastPrompt,
+  getLastPrompt,
   AVAILABLE_MODELS,
 } from "./claude.js";
 import {
@@ -22,13 +25,13 @@ import {
 } from "./formatter.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
 
-// Pending approval promises: requestId → resolver
 const pendingApprovals = new Map<
   string,
   { resolve: (approved: boolean) => void; timer: NodeJS.Timeout }
 >();
 
 let approvalCounter = 0;
+let retryCounter = 0;
 
 const folderCache = new Map<string, string>();
 let folderIdCounter = 0;
@@ -98,6 +101,10 @@ export function createBot(): Bot {
     "/session — Get session ID to continue in CLI\n" +
     "/cancel — Abort the current operation\n" +
     "/help — Show this help message\n\n" +
+    "<b>New:</b>\n" +
+    "• Send documents (PDF, code files, etc.) for analysis\n" +
+    "• Reply to any Claude message to include it as context\n" +
+    "• Tap Retry on errors to re-run the last prompt\n\n" +
     "<b>Tips:</b>\n" +
     "• Use /folder to pick which repo Claude works in\n" +
     "• Send a photo with a caption to ask about images\n" +
@@ -196,7 +203,6 @@ export function createBot(): Bot {
     );
   });
 
-  // Shared handler: builds streaming callbacks and fires off Claude query
   function handlePrompt(chatId: number, prompt: string, bot: Bot, replyFn: (text: string) => Promise<{ message_id: number }>) {
     (async () => {
       if (isProcessing(chatId)) {
@@ -204,8 +210,21 @@ export function createBot(): Bot {
         return;
       }
 
+      if (isCoolingDown(chatId)) {
+        await bot.api.sendMessage(chatId, "Slow down — wait a moment before sending again.");
+        return;
+      }
+
+      setLastPrompt(chatId, prompt);
+
+      await bot.api.sendChatAction(chatId, "typing");
+
       const thinking = await replyFn("Thinking...");
       const thinkingMsgId = thinking.message_id;
+
+      const typingInterval = setInterval(() => {
+        bot.api.sendChatAction(chatId, "typing").catch(() => {});
+      }, 4000);
 
       let buffer = "";
       let currentActivity = "Thinking...";
@@ -317,6 +336,7 @@ export function createBot(): Bot {
         turns: number;
         durationMs: number;
       }) => {
+        clearInterval(typingInterval);
         if (editTimer) clearTimeout(editTimer);
 
         // Use the streamed buffer if result.text is empty (can happen with tool-only responses)
@@ -360,16 +380,24 @@ export function createBot(): Bot {
       };
 
       const onError = async (error: Error) => {
+        clearInterval(typingInterval);
         if (editTimer) clearTimeout(editTimer);
         logError(error.message);
+
+        const retryId = String(++retryCounter);
+        const keyboard = new InlineKeyboard().text("Retry", `retry:${retryId}`);
+
         try {
           await bot.api.editMessageText(
             chatId,
             thinkingMsgId,
-            `Error: ${error.message}`
+            `Error: ${error.message}`,
+            { reply_markup: keyboard }
           );
         } catch {
-          await bot.api.sendMessage(chatId, `Error: ${error.message}`).catch(() => {});
+          await bot.api.sendMessage(chatId, `Error: ${error.message}`, {
+            reply_markup: keyboard,
+          }).catch(() => {});
         }
       };
 
@@ -385,13 +413,51 @@ export function createBot(): Bot {
     });
   }
 
-  // Text message handler
+  function extractReplyContext(ctx: { message?: { reply_to_message?: { text?: string } } }): string {
+    const quoted = ctx.message?.reply_to_message?.text;
+    if (!quoted) return "";
+    const preview = quoted.length > 500 ? quoted.slice(0, 500) + "..." : quoted;
+    return `[Replying to message: "${preview}"]
+
+`;
+  }
+
   bot.on("message:text", (ctx) => {
+    const replyCtx = extractReplyContext(ctx);
+    const prompt = replyCtx + ctx.message.text;
     logUser(ctx.message.text);
-    handlePrompt(ctx.chat.id, ctx.message.text, bot, (text) => ctx.reply(text));
+    handlePrompt(ctx.chat.id, prompt, bot, (text) => ctx.reply(text));
   });
 
-  // Photo message handler
+  bot.on("message:document", async (ctx) => {
+    const chatId = ctx.chat.id;
+
+    if (isProcessing(chatId)) {
+      await ctx.reply("Already processing a request. Use /cancel to abort.");
+      return;
+    }
+
+    const doc = ctx.message.document;
+    const file = await ctx.api.getFile(doc.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+
+    const tmpDir = path.join(getWorkingDir(chatId), ".tmp-images");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const fileName = doc.file_name || `file-${Date.now()}`;
+    const tmpFile = path.join(tmpDir, fileName);
+
+    const res = await fetch(fileUrl);
+    const arrayBuf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(tmpFile, arrayBuf);
+
+    const caption = ctx.message.caption || `Analyze this file: ${fileName}`;
+    logUser(`[document: ${fileName}] ${caption}`);
+    const replyCtx = extractReplyContext(ctx);
+    const prompt = replyCtx + `I've sent you a file saved at ${tmpFile}\n\nPlease read that file, then respond to this: ${caption}`;
+
+    handlePrompt(chatId, prompt, bot, (text) => ctx.reply(text));
+  });
+
   bot.on("message:photo", async (ctx) => {
     const chatId = ctx.chat.id;
 
@@ -416,7 +482,8 @@ export function createBot(): Bot {
 
     const caption = ctx.message.caption || "Describe this image.";
     logUser(`[photo] ${caption}`);
-    const prompt = `I've sent you an image saved at ${tmpFile}\n\nPlease read/view that image file, then respond to this: ${caption}`;
+    const replyCtx = extractReplyContext(ctx);
+    const prompt = replyCtx + `I've sent you an image saved at ${tmpFile}\n\nPlease read/view that image file, then respond to this: ${caption}`;
 
     handlePrompt(chatId, prompt, bot, (text) => ctx.reply(text));
   });
@@ -476,7 +543,21 @@ export function createBot(): Bot {
       return;
     }
 
-    // Approve/Deny
+    if (data.startsWith("retry:")) {
+      const chatId = ctx.chat!.id;
+      const lastPrompt = getLastPrompt(chatId);
+      if (!lastPrompt) {
+        await ctx.answerCallbackQuery("No previous prompt to retry.").catch(() => {});
+        return;
+      }
+      await ctx.editMessageText(`Retrying...`).catch(() => {});
+      await ctx.answerCallbackQuery("Retrying").catch(() => {});
+      handlePrompt(chatId, lastPrompt, bot, (text) =>
+        bot.api.sendMessage(chatId, text)
+      );
+      return;
+    }
+
     const match = data.match(/^(approve|deny):(\d+)$/);
     if (!match) {
       await ctx.answerCallbackQuery("Invalid action").catch(() => {});

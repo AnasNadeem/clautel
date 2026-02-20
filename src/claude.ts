@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { query } from "@anthropic-ai/claude-code";
 import { config } from "./config.js";
 import { logTool, logApproval, logStatus } from "./log.js";
@@ -51,16 +53,47 @@ export const AVAILABLE_MODELS = [
 
 const DEFAULT_MODEL = AVAILABLE_MODELS[0].id;
 
-// chatId → Claude sessionId
+const STATE_FILE = path.join(config.CLAUDE_WORKING_DIR, ".claude-on-phone-state.json");
+
+interface PersistedState {
+  sessions: Record<string, string>;
+  sessionTokens: Record<string, TokenUsage>;
+  selectedModels: Record<string, string>;
+  workingDirs: Record<string, string>;
+}
+
 const sessions = new Map<number, string>();
-// chatId → total tokens accumulated
 const sessionTokens = new Map<number, TokenUsage>();
-// chatId → AbortController for active query
 const activeAborts = new Map<number, AbortController>();
-// chatId → selected model
 const selectedModels = new Map<number, string>();
-// chatId → working directory
 const workingDirs = new Map<number, string>();
+const lastQueryEnd = new Map<number, number>();
+const lastPrompts = new Map<number, string>();
+
+function loadState(): void {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return;
+    const raw: PersistedState = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+    for (const [k, v] of Object.entries(raw.sessions || {})) sessions.set(Number(k), v);
+    for (const [k, v] of Object.entries(raw.sessionTokens || {})) sessionTokens.set(Number(k), v);
+    for (const [k, v] of Object.entries(raw.selectedModels || {})) selectedModels.set(Number(k), v);
+    for (const [k, v] of Object.entries(raw.workingDirs || {})) workingDirs.set(Number(k), v);
+  } catch {}
+}
+
+function saveState(): void {
+  try {
+    const state: PersistedState = {
+      sessions: Object.fromEntries(sessions),
+      sessionTokens: Object.fromEntries(sessionTokens),
+      selectedModels: Object.fromEntries(selectedModels),
+      workingDirs: Object.fromEntries(workingDirs),
+    };
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  } catch {}
+}
+
+loadState();
 
 export function isProcessing(chatId: number): boolean {
   return activeAborts.has(chatId);
@@ -74,11 +107,13 @@ export function clearSession(chatId: number): void {
   sessions.delete(chatId);
   sessionTokens.delete(chatId);
   workingDirs.delete(chatId);
+  saveState();
 }
 
 export function setModel(chatId: number, modelId: string): void {
   selectedModels.set(chatId, modelId);
   sessions.delete(chatId);
+  saveState();
 }
 
 export function getModel(chatId: number): string {
@@ -93,6 +128,7 @@ export function setWorkingDir(chatId: number, dir: string): void {
   sessions.delete(chatId);
   sessionTokens.delete(chatId);
   workingDirs.set(chatId, dir);
+  saveState();
 }
 
 export function getWorkingDir(chatId: number): string {
@@ -107,6 +143,36 @@ export function cancelQuery(chatId: number): boolean {
     return true;
   }
   return false;
+}
+
+const COOLDOWN_MS = 2000;
+
+export function isCoolingDown(chatId: number): boolean {
+  const last = lastQueryEnd.get(chatId);
+  if (!last) return false;
+  return Date.now() - last < COOLDOWN_MS;
+}
+
+export function setLastPrompt(chatId: number, prompt: string): void {
+  lastPrompts.set(chatId, prompt);
+}
+
+export function getLastPrompt(chatId: number): string | undefined {
+  return lastPrompts.get(chatId);
+}
+
+export function cleanupTempFiles(chatId: number): void {
+  try {
+    const cwd = getWorkingDir(chatId);
+    const tmpDir = path.join(cwd, ".tmp-images");
+    if (fs.existsSync(tmpDir)) {
+      const files = fs.readdirSync(tmpDir);
+      for (const f of files) {
+        fs.unlinkSync(path.join(tmpDir, f));
+      }
+      fs.rmdirSync(tmpDir);
+    }
+  } catch {}
 }
 
 // Claude Code-style spinner words shown during thinking
@@ -281,6 +347,7 @@ export async function sendMessage(
             cacheCreationTokens: prev.cacheCreationTokens + usage.cacheCreationTokens,
             cacheReadTokens: prev.cacheReadTokens + usage.cacheReadTokens,
           });
+          saveState();
 
           callbacks.onResult({
             text: msg.result as string || "",
@@ -306,5 +373,7 @@ export async function sendMessage(
   } finally {
     clearInterval(thinkingInterval);
     activeAborts.delete(chatId);
+    lastQueryEnd.set(chatId, Date.now());
+    cleanupTempFiles(chatId);
   }
 }
