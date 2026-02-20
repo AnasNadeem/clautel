@@ -17,6 +17,7 @@ import {
   splitMessage,
   formatToolCall,
 } from "./formatter.js";
+import { logUser, logStream, logResult, logError } from "./log.js";
 
 // Pending approval promises: requestId → resolver
 const pendingApprovals = new Map<
@@ -51,7 +52,7 @@ export function createBot(): Bot {
         "<b>Commands:</b>\n" +
         "/new - Start a fresh session\n" +
         "/model - Switch Claude model\n" +
-        "/cost - Show session cost\n" +
+        "/cost - Show session tokens\n" +
         "/cancel - Abort current operation",
       { parse_mode: "HTML" }
     );
@@ -111,7 +112,6 @@ export function createBot(): Bot {
 
   // Shared handler: builds streaming callbacks and fires off Claude query
   function handlePrompt(chatId: number, prompt: string, bot: Bot, replyFn: (text: string) => Promise<{ message_id: number }>) {
-    // This is intentionally not async — returns void so webhook doesn't block.
     (async () => {
       if (isProcessing(chatId)) {
         await bot.api.sendMessage(chatId, "Already processing a request. Use /cancel to abort.");
@@ -125,8 +125,6 @@ export function createBot(): Bot {
       let lastEditTime = 0;
       let editTimer: NodeJS.Timeout | null = null;
       let lastEditedText = "";
-      let currentStatus = "Thinking...";
-      let statusDirty = false;
 
       const doEdit = async () => {
         if (editTimer) {
@@ -163,26 +161,18 @@ export function createBot(): Bot {
       };
 
       const onStatusUpdate = (status: string) => {
-        currentStatus = status;
+        // Only update the Telegram message if no text has streamed yet
         if (!buffer.trim()) {
-          statusDirty = true;
           const now = Date.now();
           if (now - lastEditTime >= 1500) {
-            doStatusEdit();
+            lastEditTime = now;
+            const text = `<i>${status}</i>`;
+            if (text !== lastEditedText) {
+              lastEditedText = text;
+              bot.api.editMessageText(chatId, thinkingMsgId, text, { parse_mode: "HTML" }).catch(() => {});
+            }
           }
         }
-      };
-
-      const doStatusEdit = async () => {
-        if (!statusDirty) return;
-        statusDirty = false;
-        lastEditTime = Date.now();
-        const text = `<i>${currentStatus}</i>`;
-        if (text === lastEditedText) return;
-        lastEditedText = text;
-        try {
-          await bot.api.editMessageText(chatId, thinkingMsgId, text, { parse_mode: "HTML" });
-        } catch {}
       };
 
       const onStreamChunk = (chunk: string) => {
@@ -235,7 +225,13 @@ export function createBot(): Bot {
       }) => {
         if (editTimer) clearTimeout(editTimer);
 
-        const html = claudeToTelegram(result.text);
+        // Use the streamed buffer if result.text is empty (can happen with tool-only responses)
+        const finalText = result.text || buffer || "Done.";
+
+        // Log full response to terminal
+        logStream(finalText);
+
+        const html = claudeToTelegram(finalText);
         const parts = splitMessage(html);
 
         try {
@@ -250,7 +246,7 @@ export function createBot(): Bot {
             await bot.api.editMessageText(
               chatId,
               thinkingMsgId,
-              result.text.slice(0, 4096) || "Done."
+              finalText.slice(0, 4096) || "Done."
             );
           } catch {}
         }
@@ -262,13 +258,14 @@ export function createBot(): Bot {
             });
           } catch {
             await bot.api
-              .sendMessage(chatId, result.text.slice(i * 4000, (i + 1) * 4000))
+              .sendMessage(chatId, finalText.slice(i * 4000, (i + 1) * 4000))
               .catch(() => {});
           }
         }
 
         const seconds = (result.durationMs / 1000).toFixed(1);
         const tokens = result.usage.inputTokens + result.usage.outputTokens;
+        logResult(tokens, result.turns, seconds);
         await bot.api
           .sendMessage(
             chatId,
@@ -279,6 +276,7 @@ export function createBot(): Bot {
 
       const onError = async (error: Error) => {
         if (editTimer) clearTimeout(editTimer);
+        logError(error.message);
         try {
           await bot.api.editMessageText(
             chatId,
@@ -304,6 +302,7 @@ export function createBot(): Bot {
 
   // Text message handler
   bot.on("message:text", (ctx) => {
+    logUser(ctx.message.text);
     handlePrompt(ctx.chat.id, ctx.message.text, bot, (text) => ctx.reply(text));
   });
 
@@ -316,23 +315,22 @@ export function createBot(): Bot {
       return;
     }
 
-    // Get highest resolution photo
     const photos = ctx.message.photo;
     const photo = photos[photos.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
-    // Download to temp file
     const tmpDir = path.join(config.CLAUDE_WORKING_DIR, ".tmp-images");
     fs.mkdirSync(tmpDir, { recursive: true });
     const ext = path.extname(file.file_path || ".jpg") || ".jpg";
     const tmpFile = path.join(tmpDir, `tg-${Date.now()}${ext}`);
 
     const res = await fetch(fileUrl);
-    const buffer = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(tmpFile, buffer);
+    const arrayBuf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(tmpFile, arrayBuf);
 
     const caption = ctx.message.caption || "Describe this image.";
+    logUser(`[photo] ${caption}`);
     const prompt = `I've sent you an image saved at ${tmpFile}\n\nPlease read/view that image file, then respond to this: ${caption}`;
 
     handlePrompt(chatId, prompt, bot, (text) => ctx.reply(text));
@@ -381,14 +379,11 @@ export function createBot(): Bot {
     const approved = action === "approve";
     pending.resolve(approved);
 
-    // Update the approval message
     const statusLabel = approved ? "APPROVED" : "DENIED";
     try {
       const originalText = ctx.callbackQuery.message?.text || "";
       await ctx.editMessageText(`[${statusLabel}]\n${originalText}`);
-    } catch {
-      // Ignore edit errors
-    }
+    } catch {}
 
     await ctx.answerCallbackQuery(approved ? "Approved" : "Denied").catch(() => {});
   });

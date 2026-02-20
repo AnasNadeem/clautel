@@ -1,5 +1,6 @@
 import { query } from "@anthropic-ai/claude-code";
 import { config } from "./config.js";
+import { logTool, logApproval, logStatus } from "./log.js";
 
 const AUTO_APPROVE_TOOLS = [
   "Read",
@@ -74,7 +75,6 @@ export function clearSession(chatId: number): void {
 
 export function setModel(chatId: number, modelId: string): void {
   selectedModels.set(chatId, modelId);
-  // Changing model requires a fresh session
   sessions.delete(chatId);
 }
 
@@ -91,6 +91,24 @@ export function cancelQuery(chatId: number): boolean {
   }
   return false;
 }
+
+// Claude Code-style spinner words shown during thinking
+const THINKING_WORDS = [
+  "Thinking...",
+  "Reasoning...",
+  "Analyzing...",
+  "Contemplating...",
+  "Processing...",
+  "Investigating...",
+  "Considering...",
+  "Evaluating...",
+  "Synthesizing...",
+  "Formulating...",
+  "Pondering...",
+  "Deliberating...",
+  "Examining...",
+  "Deciphering...",
+];
 
 function formatToolStatus(toolName: string): string {
   const toolLabels: Record<string, string> = {
@@ -110,6 +128,23 @@ function formatToolStatus(toolName: string): string {
   return toolLabels[toolName] || `Using ${toolName}...`;
 }
 
+function toolDetail(toolName: string, input: Record<string, unknown>): string {
+  switch (toolName) {
+    case "Read":
+    case "Write":
+    case "Edit":
+      return String(input.file_path || "");
+    case "Bash":
+      return String(input.command || "").slice(0, 80);
+    case "Glob":
+      return String(input.pattern || "");
+    case "Grep":
+      return String(input.pattern || "");
+    default:
+      return "";
+  }
+}
+
 export async function sendMessage(
   chatId: number,
   prompt: string,
@@ -119,6 +154,20 @@ export async function sendMessage(
   activeAborts.set(chatId, abortController);
 
   const sessionId = sessions.get(chatId);
+  let hasStreamedText = false;
+
+  // Cycle through thinking words until text starts streaming
+  let wordIdx = Math.floor(Math.random() * THINKING_WORDS.length);
+  const thinkingInterval = setInterval(() => {
+    if (hasStreamedText || abortController.signal.aborted) {
+      clearInterval(thinkingInterval);
+      return;
+    }
+    wordIdx = (wordIdx + 1) % THINKING_WORDS.length;
+    const word = THINKING_WORDS[wordIdx];
+    callbacks.onStatusUpdate(word);
+    logStatus(word);
+  }, 2000);
 
   try {
     const model = selectedModels.get(chatId) || DEFAULT_MODEL;
@@ -134,10 +183,12 @@ export async function sendMessage(
         abortController,
         canUseTool: async (toolName, input, { signal }) => {
           if (AUTO_APPROVE_TOOLS.includes(toolName)) {
+            logTool(toolName, toolDetail(toolName, input as Record<string, unknown>));
             return { behavior: "allow" as const, updatedInput: input };
           }
 
-          // Need user approval — race against abort signal
+          logTool(`${toolName} (awaiting approval)`, toolDetail(toolName, input as Record<string, unknown>));
+
           const approved = await Promise.race([
             callbacks.onToolApproval(
               toolName,
@@ -153,6 +204,8 @@ export async function sendMessage(
               });
             }),
           ]);
+
+          logApproval(toolName, approved);
 
           if (approved) {
             return { behavior: "allow" as const, updatedInput: input };
@@ -175,17 +228,25 @@ export async function sendMessage(
         if (event.type === "content_block_start") {
           const block = event.content_block as Record<string, unknown> | undefined;
           if (block?.type === "tool_use" && typeof block.name === "string") {
-            callbacks.onStatusUpdate(formatToolStatus(block.name));
+            const status = formatToolStatus(block.name);
+            callbacks.onStatusUpdate(status);
+            logStatus(status);
           } else if (block?.type === "thinking") {
-            callbacks.onStatusUpdate("Thinking...");
+            callbacks.onStatusUpdate("Thinking deeply...");
+            logStatus("Thinking deeply...");
           }
         } else if (event.type === "content_block_delta") {
           const delta = event.delta as Record<string, unknown> | undefined;
           if (delta?.type === "text_delta" && typeof delta.text === "string") {
+            if (!hasStreamedText) {
+              hasStreamedText = true;
+              clearInterval(thinkingInterval);
+            }
             callbacks.onStreamChunk(delta.text);
           }
         }
       } else if (message.type === "result") {
+        clearInterval(thinkingInterval);
         if (message.subtype === "success") {
           const msg = message as Record<string, unknown>;
           const rawUsage = msg.usage as Record<string, number> | undefined;
@@ -219,12 +280,14 @@ export async function sendMessage(
       }
     }
   } catch (error) {
+    clearInterval(thinkingInterval);
     if (!abortController.signal.aborted) {
       callbacks.onError(
         error instanceof Error ? error : new Error(String(error))
       );
     }
   } finally {
+    clearInterval(thinkingInterval);
     activeAborts.delete(chatId);
   }
 }
