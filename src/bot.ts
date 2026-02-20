@@ -125,6 +125,8 @@ export function createBot(): Bot {
       let lastEditTime = 0;
       let editTimer: NodeJS.Timeout | null = null;
       let lastEditedText = "";
+      let currentStatus = "Thinking...";
+      let statusDirty = false;
 
       const doEdit = async () => {
         if (editTimer) {
@@ -158,6 +160,29 @@ export function createBot(): Bot {
             // Ignore edit errors
           }
         }
+      };
+
+      const onStatusUpdate = (status: string) => {
+        currentStatus = status;
+        if (!buffer.trim()) {
+          statusDirty = true;
+          const now = Date.now();
+          if (now - lastEditTime >= 1500) {
+            doStatusEdit();
+          }
+        }
+      };
+
+      const doStatusEdit = async () => {
+        if (!statusDirty) return;
+        statusDirty = false;
+        lastEditTime = Date.now();
+        const text = `<i>${currentStatus}</i>`;
+        if (text === lastEditedText) return;
+        lastEditedText = text;
+        try {
+          await bot.api.editMessageText(chatId, thinkingMsgId, text, { parse_mode: "HTML" });
+        } catch {}
       };
 
       const onStreamChunk = (chunk: string) => {
@@ -267,6 +292,7 @@ export function createBot(): Bot {
 
       await sendMessage(chatId, prompt, {
         onStreamChunk,
+        onStatusUpdate,
         onToolApproval,
         onResult,
         onError,

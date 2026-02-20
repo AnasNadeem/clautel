@@ -28,6 +28,7 @@ export interface TokenUsage {
 
 export interface SendCallbacks {
   onStreamChunk: (text: string) => void;
+  onStatusUpdate: (status: string) => void;
   onToolApproval: (
     toolName: string,
     input: Record<string, unknown>
@@ -89,6 +90,24 @@ export function cancelQuery(chatId: number): boolean {
     return true;
   }
   return false;
+}
+
+function formatToolStatus(toolName: string): string {
+  const toolLabels: Record<string, string> = {
+    Read: "Reading file...",
+    Bash: "Running command...",
+    Edit: "Editing file...",
+    MultiEdit: "Editing file...",
+    Write: "Writing file...",
+    Glob: "Searching files...",
+    Grep: "Searching code...",
+    WebSearch: "Searching the web...",
+    WebFetch: "Fetching URL...",
+    Task: "Running agent...",
+    TodoWrite: "Updating tasks...",
+    NotebookEdit: "Editing notebook...",
+  };
+  return toolLabels[toolName] || `Using ${toolName}...`;
 }
 
 export async function sendMessage(
@@ -153,7 +172,14 @@ export async function sendMessage(
         sessions.set(chatId, message.session_id);
       } else if (message.type === "stream_event") {
         const event = message.event as Record<string, unknown>;
-        if (event.type === "content_block_delta") {
+        if (event.type === "content_block_start") {
+          const block = event.content_block as Record<string, unknown> | undefined;
+          if (block?.type === "tool_use" && typeof block.name === "string") {
+            callbacks.onStatusUpdate(formatToolStatus(block.name));
+          } else if (block?.type === "thinking") {
+            callbacks.onStatusUpdate("Thinking...");
+          }
+        } else if (event.type === "content_block_delta") {
           const delta = event.delta as Record<string, unknown> | undefined;
           if (delta?.type === "text_delta" && typeof delta.text === "string") {
             callbacks.onStreamChunk(delta.text);
