@@ -10,6 +10,7 @@ import {
   getSessionTokens,
   setModel,
   getModel,
+  getSessionId,
   AVAILABLE_MODELS,
 } from "./claude.js";
 import {
@@ -44,18 +45,30 @@ export function createBot(): Bot {
     await next();
   });
 
+  const helpText =
+    "<b>Claude on Phone</b>\n\n" +
+    "Send any text or photo to interact with Claude Code.\n\n" +
+    "<b>Commands:</b>\n" +
+    "/new — Start a fresh session (clears context)\n" +
+    "/model — Switch Claude model (Opus / Sonnet / Haiku)\n" +
+    "/cost — Show token usage for the current session\n" +
+    "/session — Get session ID to continue in CLI\n" +
+    "/cancel — Abort the current operation\n" +
+    "/help — Show this help message\n\n" +
+    "<b>Tips:</b>\n" +
+    "• Send a photo with a caption to ask about images\n" +
+    "• Claude can read, edit, and create files in your project\n" +
+    "• Some tools require your approval via Approve/Deny buttons\n" +
+    "• Use /cancel if a response is taking too long";
+
   // /start command
   bot.command("start", async (ctx) => {
-    await ctx.reply(
-      "<b>Claude on Phone</b>\n\n" +
-        "Send any message to interact with Claude Code.\n\n" +
-        "<b>Commands:</b>\n" +
-        "/new - Start a fresh session\n" +
-        "/model - Switch Claude model\n" +
-        "/cost - Show session tokens\n" +
-        "/cancel - Abort current operation",
-      { parse_mode: "HTML" }
-    );
+    await ctx.reply(helpText, { parse_mode: "HTML" });
+  });
+
+  // /help command
+  bot.command("help", async (ctx) => {
+    await ctx.reply(helpText, { parse_mode: "HTML" });
   });
 
   // /new command — fresh session
@@ -108,6 +121,24 @@ export function createBot(): Bot {
     } else {
       await ctx.reply("Nothing running to cancel.");
     }
+  });
+
+  // /session command — get session ID to continue in CLI
+  bot.command("session", async (ctx) => {
+    const sessionId = getSessionId(ctx.chat.id);
+    if (!sessionId) {
+      await ctx.reply("No active session. Send a message first to start one.");
+      return;
+    }
+    const cmd = `claude --resume ${sessionId}`;
+    await ctx.reply(
+      `<b>Session ID</b>\n<code>${sessionId}</code>\n\n` +
+        `<b>Continue in CLI</b>\n` +
+        `Run this from <code>${config.CLAUDE_WORKING_DIR}</code>:\n\n` +
+        `<code>${cmd}</code>\n\n` +
+        `Tap the command above to copy it.`,
+      { parse_mode: "HTML" }
+    );
   });
 
   // Shared handler: builds streaming callbacks and fires off Claude query

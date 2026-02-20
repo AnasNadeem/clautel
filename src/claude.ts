@@ -82,6 +82,10 @@ export function getModel(chatId: number): string {
   return selectedModels.get(chatId) || DEFAULT_MODEL;
 }
 
+export function getSessionId(chatId: number): string | undefined {
+  return sessions.get(chatId);
+}
+
 export function cancelQuery(chatId: number): boolean {
   const controller = activeAborts.get(chatId);
   if (controller) {
