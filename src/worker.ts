@@ -234,9 +234,9 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
             resolve("deny");
           }, 5 * 60 * 1000);
 
-          pendingApprovals.set(requestId, { resolve, timer, description });
-
           const description = formatToolCall(toolName, input);
+
+          pendingApprovals.set(requestId, { resolve, timer, description });
           const keyboard = new InlineKeyboard()
             .text("Approve", `approve:${requestId}`)
             .text("Always Allow", `alwaysallow:${requestId}`)
