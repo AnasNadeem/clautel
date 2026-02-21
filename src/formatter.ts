@@ -103,11 +103,15 @@ function getOpenTags(html: string): string[] {
   return stack;
 }
 
+// Max extra bytes closing tags can add (e.g. </blockquote></pre></code></b></i></s></u>)
+const TAG_RESERVE = 80;
+
 export function splitMessage(text: string, limit = 4096): string[] {
   if (text.length <= limit) return [text];
 
   const messages: string[] = [];
   let remaining = text;
+  const effectiveLimit = limit - TAG_RESERVE;
 
   while (remaining.length > 0) {
     if (remaining.length <= limit) {
@@ -115,13 +119,13 @@ export function splitMessage(text: string, limit = 4096): string[] {
       break;
     }
 
-    // Find a good split point near the limit
-    let splitIdx = remaining.lastIndexOf("\n", limit);
-    if (splitIdx < limit * 0.3) {
-      splitIdx = remaining.lastIndexOf(" ", limit);
+    // Find a good split point near the limit, leaving room for closing tags
+    let splitIdx = remaining.lastIndexOf("\n", effectiveLimit);
+    if (splitIdx < effectiveLimit * 0.3) {
+      splitIdx = remaining.lastIndexOf(" ", effectiveLimit);
     }
-    if (splitIdx < limit * 0.3) {
-      splitIdx = limit;
+    if (splitIdx < effectiveLimit * 0.3) {
+      splitIdx = effectiveLimit;
     }
 
     // Don't split inside an HTML tag — back up to before the last unclosed '<'

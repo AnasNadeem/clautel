@@ -14,7 +14,6 @@ const LOG_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 const LOG_KEEP_COUNT = 3; // keep app.log.1, app.log.2, app.log.3
 
 const LAUNCHD_LABEL = "com.claude-on-phone.daemon";
-const PLIST_PATH = path.join(os.homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 
 // Resolve daemon path: prefer compiled dist/daemon.js, fall back to tsx for local dev
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -121,6 +120,7 @@ function cmdStart(): void {
   });
 
   child.unref();
+  fs.closeSync(logFd);
   fs.writeFileSync(PID_FILE, String(child.pid));
 
   console.log(`Started (PID ${child.pid})`);
@@ -164,6 +164,10 @@ function cmdLogs(): void {
   });
 }
 
+function getPlistPath(): string {
+  return path.join(os.homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+}
+
 function cmdInstallService(): void {
   if (process.platform !== "darwin") {
     console.error("install-service is only supported on macOS (launchd).");
@@ -204,15 +208,15 @@ function cmdInstallService(): void {
 </dict>
 </plist>`;
 
-  const agentsDir = path.dirname(PLIST_PATH);
+  const agentsDir = path.dirname(getPlistPath());
   fs.mkdirSync(agentsDir, { recursive: true });
-  fs.writeFileSync(PLIST_PATH, plist);
+  fs.writeFileSync(getPlistPath(), plist);
 
-  const load = spawn("launchctl", ["load", PLIST_PATH], { stdio: "inherit" });
+  const load = spawn("launchctl", ["load", getPlistPath()], { stdio: "inherit" });
   load.on("close", (code) => {
     if (code === 0) {
       console.log("Service installed and started.");
-      console.log(`Plist: ${PLIST_PATH}`);
+      console.log(`Plist: ${getPlistPath()}`);
       console.log("The daemon will auto-restart on crash and start at login.");
     } else {
       console.error("Failed to load service. Check: launchctl list | grep claude");
@@ -226,14 +230,14 @@ function cmdUninstallService(): void {
     process.exit(1);
   }
 
-  if (!fs.existsSync(PLIST_PATH)) {
+  if (!fs.existsSync(getPlistPath())) {
     console.log("Service not installed.");
     return;
   }
 
-  const unload = spawn("launchctl", ["unload", PLIST_PATH], { stdio: "inherit" });
+  const unload = spawn("launchctl", ["unload", getPlistPath()], { stdio: "inherit" });
   unload.on("close", () => {
-    fs.rmSync(PLIST_PATH, { force: true });
+    fs.rmSync(getPlistPath(), { force: true });
     console.log("Service uninstalled.");
   });
 }

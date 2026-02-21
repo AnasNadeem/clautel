@@ -77,24 +77,23 @@ describe("splitMessage", () => {
   });
 
   it("splits long messages", () => {
-    const text = "a".repeat(100);
-    const parts = splitMessage(text, 40);
+    const text = "a".repeat(500);
+    const parts = splitMessage(text, 200);
     assert.ok(parts.length > 1);
-    // Every part should be under the limit (plus possible closing tags)
     for (const part of parts) {
-      assert.ok(part.length <= 60, `Part too long: ${part.length}`);
+      assert.ok(part.length <= 200, `Part too long: ${part.length}`);
     }
   });
 
   it("prefers splitting at newlines", () => {
-    const text = "line one\nline two\nline three";
-    const parts = splitMessage(text, 15);
-    assert.equal(parts[0], "line one");
+    const text = "a".repeat(100) + "\n" + "b".repeat(100);
+    const parts = splitMessage(text, 200);
+    assert.equal(parts[0], "a".repeat(100));
   });
 
   it("closes and reopens tags across splits", () => {
-    const text = "<pre>" + "x".repeat(100) + "</pre>";
-    const parts = splitMessage(text, 50);
+    const text = "<pre>" + "x".repeat(500) + "</pre>";
+    const parts = splitMessage(text, 200);
     assert.ok(parts.length >= 2);
     // First part should close the <pre>
     assert.ok(parts[0].endsWith("</pre>"), `First part should close pre: ${parts[0]}`);
@@ -103,8 +102,8 @@ describe("splitMessage", () => {
   });
 
   it("handles nested tags across splits", () => {
-    const text = "<b><i>" + "x".repeat(100) + "</i></b>";
-    const parts = splitMessage(text, 50);
+    const text = "<b><i>" + "x".repeat(500) + "</i></b>";
+    const parts = splitMessage(text, 200);
     assert.ok(parts.length >= 2);
     // First part should close both tags in reverse order
     assert.ok(parts[0].includes("</i></b>"));

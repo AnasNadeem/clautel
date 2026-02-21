@@ -100,6 +100,7 @@ async function main() {
 
   // Periodic health check: verify worker bots are still reachable
   healthCheckTimer = setInterval(async () => {
+    const deadIds: number[] = [];
     for (const [id, worker] of activeWorkers) {
       try {
         await worker.bot.api.getMe();
@@ -107,8 +108,12 @@ async function main() {
         console.error(`[${worker.config.username}] Health check failed, removing: ${(err as Error).message}`);
         worker.bridge.abortAll();
         try { await worker.bot.stop(); } catch {}
-        activeWorkers.delete(id);
+        deadIds.push(id);
       }
+    }
+    for (const id of deadIds) {
+      activeWorkers.delete(id);
+      removeBot(id);
     }
   }, HEALTH_CHECK_INTERVAL_MS);
 
