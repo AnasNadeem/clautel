@@ -64,10 +64,11 @@ async function cmdSetup(): Promise<void> {
     process.exit(1);
   }
 
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     CONFIG_FILE,
-    JSON.stringify({ TELEGRAM_BOT_TOKEN: token, TELEGRAM_OWNER_ID: ownerId }, null, 2)
+    JSON.stringify({ TELEGRAM_BOT_TOKEN: token, TELEGRAM_OWNER_ID: ownerId }, null, 2),
+    { mode: 0o600 }
   );
 
   console.log(`\nConfig saved to ${CONFIG_FILE}`);

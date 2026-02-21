@@ -12,7 +12,7 @@ export interface BotConfig {
 const BOTS_FILE = path.join(config.DATA_DIR, "bots.json");
 
 function ensureDataDir(): void {
-  fs.mkdirSync(config.DATA_DIR, { recursive: true });
+  fs.mkdirSync(config.DATA_DIR, { recursive: true, mode: 0o700 });
 }
 
 export function loadBots(): BotConfig[] {
@@ -26,7 +26,7 @@ export function loadBots(): BotConfig[] {
 
 export function saveBots(bots: BotConfig[]): void {
   ensureDataDir();
-  fs.writeFileSync(BOTS_FILE, JSON.stringify(bots, null, 2));
+  fs.writeFileSync(BOTS_FILE, JSON.stringify(bots, null, 2), { mode: 0o600 });
 }
 
 export function addBot(bot: BotConfig): void {

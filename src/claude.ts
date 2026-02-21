@@ -177,13 +177,13 @@ export class ClaudeBridge {
 
   private saveState(): void {
     try {
-      fs.mkdirSync(config.DATA_DIR, { recursive: true });
+      fs.mkdirSync(config.DATA_DIR, { recursive: true, mode: 0o700 });
       const state: PersistedState = {
         sessions: Object.fromEntries(this.sessions),
         sessionTokens: Object.fromEntries(this.sessionTokens),
         selectedModels: Object.fromEntries(this.selectedModels),
       };
-      fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
+      fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2), { mode: 0o600 });
     } catch {}
   }
 

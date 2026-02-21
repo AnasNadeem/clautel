@@ -70,7 +70,7 @@ function getActiveWorkers(): Map<number, { config: BotConfig }> {
 
 async function main() {
   // Write our own PID so the CLI can detect us even if launched via npm start
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(PID_FILE, String(process.pid));
 
   const managerBot = createManager({ startWorker, stopWorker, getActiveWorkers });
