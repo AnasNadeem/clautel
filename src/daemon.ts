@@ -7,11 +7,29 @@ import type { BotConfig } from "./store.js";
 
 const activeWorkers = new Map<number, { config: BotConfig; bot: Bot; bridge: ClaudeBridge }>();
 
+const WORKER_COMMANDS = [
+  { command: "new",     description: "Start a fresh session" },
+  { command: "model",   description: "Switch Claude model (Opus / Sonnet / Haiku)" },
+  { command: "cost",    description: "Show token usage for this session" },
+  { command: "session", description: "Get session ID to resume in CLI" },
+  { command: "cancel",  description: "Abort the current operation" },
+  { command: "help",    description: "Show help" },
+];
+
+const MANAGER_COMMANDS = [
+  { command: "bots",   description: "List active worker bots" },
+  { command: "add",    description: "Add a new worker bot" },
+  { command: "remove", description: "Remove a worker bot" },
+  { command: "cancel", description: "Cancel current operation" },
+  { command: "help",   description: "Show help" },
+];
+
 async function startWorker(botConfig: BotConfig): Promise<void> {
   const bridge = new ClaudeBridge(botConfig.id, botConfig.workingDir, botConfig.username);
   const bot = createWorker(botConfig, bridge);
 
   await bot.init();
+  await bot.api.setMyCommands(WORKER_COMMANDS);
 
   addBot(botConfig);
   activeWorkers.set(botConfig.id, { config: botConfig, bot, bridge });
@@ -47,6 +65,7 @@ function getActiveWorkers(): Map<number, { config: BotConfig }> {
 
 async function main() {
   const managerBot = createManager({ startWorker, stopWorker, getActiveWorkers });
+  await managerBot.api.setMyCommands(MANAGER_COMMANDS);
 
   // Restore saved workers from previous session
   const savedBots = loadBots();
