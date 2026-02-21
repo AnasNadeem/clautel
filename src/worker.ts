@@ -11,6 +11,13 @@ import {
 } from "./formatter.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
 
+const TYPING_INTERVAL_MS = 4000;
+const EDIT_DEBOUNCE_MS = 1500;
+const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 30_000;
+const REPLY_PREVIEW_MAX = 500;
+const STREAM_MAX_LEN = 4000;
+
 export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
   const bot = new Bot(botConfig.token);
   const tag = botConfig.username;
@@ -152,7 +159,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
 
       const typingInterval = setInterval(() => {
         bot.api.sendChatAction(chatId, "typing").catch(() => {});
-      }, 4000);
+      }, TYPING_INTERVAL_MS);
 
       let buffer = "";
       let currentActivity = "Thinking...";
@@ -172,7 +179,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
 
         if (buffer.trim()) {
           let html = claudeToTelegram(buffer);
-          const maxLen = 4000 - footer.length;
+          const maxLen = STREAM_MAX_LEN - footer.length;
           if (html.length > maxLen) {
             html = html.slice(0, maxLen) + "\n\n<i>... streaming ...</i>";
           }
@@ -191,7 +198,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
         } catch {
           try {
             const plain = buffer.trim()
-              ? (buffer.length > 4000 ? buffer.slice(0, 4000) + "\n\n... streaming ..." : buffer) +
+              ? (buffer.length > STREAM_MAX_LEN ? buffer.slice(0, STREAM_MAX_LEN) + "\n\n... streaming ..." : buffer) +
                 (currentActivity ? `\n\n${currentActivity}` : "")
               : currentActivity || "Thinking...";
             if (plain !== lastEditedText) {
@@ -204,10 +211,10 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
 
       const scheduleEdit = () => {
         const now = Date.now();
-        if (now - lastEditTime >= 1500) {
+        if (now - lastEditTime >= EDIT_DEBOUNCE_MS) {
           doEdit();
         } else if (!editTimer) {
-          editTimer = setTimeout(doEdit, 1500 - (now - lastEditTime));
+          editTimer = setTimeout(doEdit, EDIT_DEBOUNCE_MS - (now - lastEditTime));
         }
       };
 
@@ -232,7 +239,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
           const timer = setTimeout(() => {
             pendingApprovals.delete(requestId);
             resolve("deny");
-          }, 5 * 60 * 1000);
+          }, APPROVAL_TIMEOUT_MS);
 
           const description = formatToolCall(toolName, input);
 
@@ -355,7 +362,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
   function extractReplyContext(ctx: { message?: { reply_to_message?: { text?: string } } }): string {
     const quoted = ctx.message?.reply_to_message?.text;
     if (!quoted) return "";
-    const preview = quoted.length > 500 ? quoted.slice(0, 500) + "..." : quoted;
+    const preview = quoted.length > REPLY_PREVIEW_MAX ? quoted.slice(0, REPLY_PREVIEW_MAX) + "..." : quoted;
     return `[Replying to message: "${preview}"]\n\n`;
   }
 
@@ -383,7 +390,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     const fileName = doc.file_name || `file-${Date.now()}`;
     const tmpFile = path.join(tmpDir, fileName);
 
-    const res = await fetch(fileUrl, { signal: AbortSignal.timeout(30_000) });
+    const res = await fetch(fileUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     const arrayBuf = Buffer.from(await res.arrayBuffer());
     fs.writeFileSync(tmpFile, arrayBuf);
 
@@ -413,7 +420,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     const ext = path.extname(file.file_path || ".jpg") || ".jpg";
     const tmpFile = path.join(tmpDir, `tg-${Date.now()}${ext}`);
 
-    const res = await fetch(fileUrl, { signal: AbortSignal.timeout(30_000) });
+    const res = await fetch(fileUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     const arrayBuf = Buffer.from(await res.arrayBuffer());
     fs.writeFileSync(tmpFile, arrayBuf);
 

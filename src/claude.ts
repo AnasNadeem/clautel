@@ -5,6 +5,9 @@ import { query } from "@anthropic-ai/claude-code";
 import { config } from "./config.js";
 import { logTool, logApproval, logStatus } from "./log.js";
 
+const COOLDOWN_MS = 2000;
+const THINKING_ROTATE_MS = 2000;
+
 const AUTO_APPROVE_TOOLS = [
   "Read",
   "Glob",
@@ -226,7 +229,7 @@ export class ClaudeBridge {
   isCoolingDown(chatId: number): boolean {
     const last = this.lastQueryEnd.get(chatId);
     if (!last) return false;
-    return Date.now() - last < 2000;
+    return Date.now() - last < COOLDOWN_MS;
   }
 
   setLastPrompt(chatId: number, prompt: string): void {
@@ -282,7 +285,7 @@ export class ClaudeBridge {
       const word = THINKING_WORDS[wordIdx];
       callbacks.onStatusUpdate(word);
       logStatus(word, this.tag);
-    }, 2000);
+    }, THINKING_ROTATE_MS);
 
     try {
       const model = this.selectedModels.get(chatId) || DEFAULT_MODEL;
