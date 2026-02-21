@@ -10,6 +10,8 @@ const DATA_DIR = path.join(os.homedir(), ".claude-on-phone");
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const LOG_FILE = path.join(DATA_DIR, "app.log");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
+const LOG_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+const LOG_KEEP_COUNT = 3; // keep app.log.1, app.log.2, app.log.3
 
 // Resolve daemon path: prefer compiled dist/daemon.js, fall back to tsx for local dev
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +21,23 @@ const srcDaemon = path.join(__dirname, "../src/daemon.ts");
 const DAEMON_CMD: [string, string[]] = fs.existsSync(compiledDaemon)
   ? [process.execPath, [compiledDaemon]]
   : ["npx", ["tsx", srcDaemon]];
+
+function rotateLog(): void {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return;
+    const stat = fs.statSync(LOG_FILE);
+    if (stat.size < LOG_MAX_BYTES) return;
+
+    // Shift existing rotated logs: app.log.2 → app.log.3, app.log.1 → app.log.2, etc.
+    for (let i = LOG_KEEP_COUNT - 1; i >= 1; i--) {
+      const from = `${LOG_FILE}.${i}`;
+      const to = `${LOG_FILE}.${i + 1}`;
+      if (fs.existsSync(from)) fs.renameSync(from, to);
+    }
+    // Current log becomes app.log.1
+    fs.renameSync(LOG_FILE, `${LOG_FILE}.1`);
+  } catch {}
+}
 
 function isRunning(pid: number): boolean {
   try {
@@ -88,6 +107,7 @@ function cmdStart(): void {
   }
 
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  rotateLog();
 
   const logFd = fs.openSync(LOG_FILE, "a");
 
