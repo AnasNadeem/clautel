@@ -17,6 +17,7 @@
     "start": "tsx src/daemon.ts",
     "dev": "tsx watch src/daemon.ts",
     "cli": "tsx src/cli.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "author": "Anas Nadeem",
