@@ -17,7 +17,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
 
   const pendingApprovals = new Map<
     string,
-    { resolve: (approved: boolean) => void; timer: NodeJS.Timeout }
+    { resolve: (result: "allow" | "always" | "deny") => void; timer: NodeJS.Timeout; description: string }
   >();
   let approvalCounter = 0;
   let retryCounter = 0;
@@ -225,20 +225,22 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
       const onToolApproval = (
         toolName: string,
         input: Record<string, unknown>
-      ): Promise<boolean> => {
-        return new Promise<boolean>((resolve) => {
+      ): Promise<"allow" | "always" | "deny"> => {
+        return new Promise((resolve) => {
           const requestId = String(++approvalCounter);
 
           const timer = setTimeout(() => {
             pendingApprovals.delete(requestId);
-            resolve(false);
+            resolve("deny");
           }, 5 * 60 * 1000);
 
-          pendingApprovals.set(requestId, { resolve, timer });
-
           const description = formatToolCall(toolName, input);
+
+          pendingApprovals.set(requestId, { resolve, timer, description });
           const keyboard = new InlineKeyboard()
             .text("Approve", `approve:${requestId}`)
+            .text("Always Allow", `alwaysallow:${requestId}`)
+            .row()
             .text("Deny", `deny:${requestId}`);
 
           bot.api
@@ -249,10 +251,12 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
             .catch(() => {
               clearTimeout(timer);
               pendingApprovals.delete(requestId);
-              resolve(false);
+              resolve("deny");
             });
         });
       };
+
+      let responseHandled = false;
 
       const onResult = async (result: {
         text: string;
@@ -260,6 +264,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
         turns: number;
         durationMs: number;
       }) => {
+        responseHandled = true;
         clearInterval(typingInterval);
         if (editTimer) clearTimeout(editTimer);
 
@@ -302,6 +307,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
       };
 
       const onError = async (error: Error) => {
+        responseHandled = true;
         clearInterval(typingInterval);
         if (editTimer) clearTimeout(editTimer);
         logError(error.message, tag);
@@ -330,6 +336,17 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
         onResult,
         onError,
       });
+
+      // Runs if cancelled (onResult/onError were never called)
+      if (!responseHandled) {
+        clearInterval(typingInterval);
+        if (editTimer) clearTimeout(editTimer);
+        try {
+          await bot.api.deleteMessage(chatId, thinkingMsgId);
+        } catch {
+          await bot.api.editMessageText(chatId, thinkingMsgId, "Cancelled.").catch(() => {});
+        }
+      }
     })().catch((err) => {
       console.error(`[${tag}] handlePrompt error:`, err);
     });
@@ -366,7 +383,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     const fileName = doc.file_name || `file-${Date.now()}`;
     const tmpFile = path.join(tmpDir, fileName);
 
-    const res = await fetch(fileUrl);
+    const res = await fetch(fileUrl, { signal: AbortSignal.timeout(30_000) });
     const arrayBuf = Buffer.from(await res.arrayBuffer());
     fs.writeFileSync(tmpFile, arrayBuf);
 
@@ -396,7 +413,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     const ext = path.extname(file.file_path || ".jpg") || ".jpg";
     const tmpFile = path.join(tmpDir, `tg-${Date.now()}${ext}`);
 
-    const res = await fetch(fileUrl);
+    const res = await fetch(fileUrl, { signal: AbortSignal.timeout(30_000) });
     const arrayBuf = Buffer.from(await res.arrayBuffer());
     fs.writeFileSync(tmpFile, arrayBuf);
 
@@ -445,7 +462,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
       return;
     }
 
-    const match = data.match(/^(approve|deny):(\d+)$/);
+    const match = data.match(/^(approve|alwaysallow|deny):(\d+)$/);
     if (!match) {
       await ctx.answerCallbackQuery("Invalid action").catch(() => {});
       return;
@@ -462,16 +479,30 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     clearTimeout(pending.timer);
     pendingApprovals.delete(requestId);
 
-    const approved = action === "approve";
-    pending.resolve(approved);
+    const result: "allow" | "always" | "deny" =
+      action === "approve"     ? "allow"  :
+      action === "alwaysallow" ? "always" :
+                                 "deny";
 
-    const statusLabel = approved ? "APPROVED" : "DENIED";
+    pending.resolve(result);
+
+    const statusLabel =
+      result === "allow"  ? "APPROVED" :
+      result === "always" ? "ALWAYS ALLOWED" :
+                            "DENIED";
+
     try {
-      const originalText = ctx.callbackQuery.message?.text || "";
-      await ctx.editMessageText(`[${statusLabel}]\n${originalText}`);
+      await ctx.editMessageText(`[${statusLabel}]\n${pending.description}`, {
+        parse_mode: "HTML",
+      });
     } catch {}
 
-    await ctx.answerCallbackQuery(approved ? "Approved" : "Denied").catch(() => {});
+    const answerText =
+      result === "allow"  ? "Approved" :
+      result === "always" ? "Allowed for this session" :
+                            "Denied";
+
+    await ctx.answerCallbackQuery(answerText).catch(() => {});
   });
 
   return bot;

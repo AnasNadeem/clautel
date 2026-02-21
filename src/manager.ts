@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot } from "grammy";
 import { config } from "./config.js";
 import type { BotConfig } from "./store.js";
 
@@ -7,13 +7,15 @@ export interface ManagerCallbacks {
   startWorker: (botConfig: BotConfig) => Promise<void>;
   stopWorker: (botId: number) => Promise<void>;
   getActiveWorkers: () => Map<number, { config: BotConfig }>;
-  getTunnelUrl: () => string;
 }
 
 interface ConversationState {
   step: "token" | "path";
   token?: string;
+  timer: NodeJS.Timeout;
 }
+
+const CONVERSATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export function createManager(callbacks: ManagerCallbacks): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
@@ -31,6 +33,26 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
     }
     await next();
   });
+
+  function setConversation(chatId: number, state: Omit<ConversationState, "timer">): void {
+    const existing = conversations.get(chatId);
+    if (existing) clearTimeout(existing.timer);
+
+    const timer = setTimeout(() => {
+      conversations.delete(chatId);
+      bot.api
+        .sendMessage(chatId, "Setup timed out. Send /add to try again.")
+        .catch(() => {});
+    }, CONVERSATION_TIMEOUT_MS);
+
+    conversations.set(chatId, { ...state, timer });
+  }
+
+  function clearConversation(chatId: number): void {
+    const existing = conversations.get(chatId);
+    if (existing) clearTimeout(existing.timer);
+    conversations.delete(chatId);
+  }
 
   function formatBotList(): string {
     const workers = callbacks.getActiveWorkers();
@@ -50,6 +72,7 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
     "/add — Add a new worker bot (interactive)\n" +
     "/add TOKEN /path/to/repo — Add a worker bot (inline)\n" +
     "/remove @username — Remove a worker bot\n" +
+    "/cancel — Cancel current operation\n" +
     "/help — Show this help message\n\n" +
     "<b>How to add a bot:</b>\n" +
     "1. Go to @BotFather, create a new bot, copy the token\n" +
@@ -74,15 +97,24 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
     });
   });
 
+  bot.command("cancel", async (ctx) => {
+    if (conversations.has(ctx.chat.id)) {
+      clearConversation(ctx.chat.id);
+      await ctx.reply("Cancelled.");
+    } else {
+      await ctx.reply("Nothing to cancel.");
+    }
+  });
+
   bot.command("add", async (ctx) => {
     const args = ctx.match?.trim();
 
     if (!args) {
-      // Start conversational flow
-      conversations.set(ctx.chat.id, { step: "token" });
+      setConversation(ctx.chat.id, { step: "token" });
       await ctx.reply(
         "Send me the bot token from @BotFather.\n\n" +
-          "It looks like: <code>123456:ABC-DEF...</code>",
+          "It looks like: <code>123456:ABC-DEF...</code>\n\n" +
+          "Send /cancel to abort.",
         { parse_mode: "HTML" }
       );
       return;
@@ -130,7 +162,7 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
 
     try {
       await callbacks.stopWorker(foundId);
-      await ctx.reply(`Removed @${username}. Bot stopped and webhook deleted.`);
+      await ctx.reply(`Removed @${username}. Bot stopped.`);
     } catch (err) {
       await ctx.reply(`Error removing @${username}: ${err}`);
     }
@@ -141,7 +173,6 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
     token: string,
     dir: string
   ): Promise<void> {
-    // Validate path
     if (!fs.existsSync(dir)) {
       await ctx.reply(`Path does not exist: <code>${dir}</code>`, {
         parse_mode: "HTML",
@@ -156,7 +187,6 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
       return;
     }
 
-    // Validate token by calling getMe
     await ctx.reply("Validating token...");
 
     let botInfo: { id: number; username: string };
@@ -169,7 +199,6 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
       return;
     }
 
-    // Check if already exists
     const workers = callbacks.getActiveWorkers();
     if (workers.has(botInfo.id)) {
       await ctx.reply(
@@ -201,12 +230,11 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
   // Handle conversational flow for /add
   bot.on("message:text", async (ctx) => {
     const conv = conversations.get(ctx.chat.id);
-    if (!conv) return; // No active conversation, ignore (commands handled above)
+    if (!conv) return;
 
     const text = ctx.message.text.trim();
 
     if (conv.step === "token") {
-      // Validate it looks like a token (number:alphanum)
       if (!/^\d+:[A-Za-z0-9_-]+$/.test(text)) {
         await ctx.reply(
           "That doesn't look like a valid bot token.\n" +
@@ -217,17 +245,16 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
         return;
       }
 
-      conv.token = text;
-      conv.step = "path";
-      conversations.set(ctx.chat.id, conv);
-      await ctx.reply("Now send the full path to the repository.\n\nExample: <code>/Users/me/projects/my-app</code>", {
-        parse_mode: "HTML",
-      });
+      setConversation(ctx.chat.id, { step: "path", token: text });
+      await ctx.reply(
+        "Now send the full path to the repository.\n\nExample: <code>/Users/me/projects/my-app</code>",
+        { parse_mode: "HTML" }
+      );
       return;
     }
 
     if (conv.step === "path") {
-      conversations.delete(ctx.chat.id);
+      clearConversation(ctx.chat.id);
       await addWorkerBot(ctx, conv.token!, text);
       return;
     }

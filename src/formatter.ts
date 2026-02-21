@@ -8,7 +8,7 @@ function escapeHtml(text: string): string {
 export function claudeToTelegram(markdown: string): string {
   let result = "";
 
-  // Split by code blocks, preserving the delimiters
+  // Split by fenced code blocks, preserving the delimiters
   const parts = markdown.split(/(```[\s\S]*?```)/g);
 
   for (const part of parts) {
@@ -26,21 +26,38 @@ export function claudeToTelegram(markdown: string): string {
         result += escapeHtml(part);
       }
     } else {
-      // Extract inline code to protect from further processing
+      // --- Line-level block patterns (headings, blockquotes) ---
+      // Extract first with placeholders so inline processing doesn't touch them
+      const blockHtml: string[] = [];
+      let text = part
+        .replace(/^#{1,6}\s+(.+)$/gm, (_, content) => {
+          blockHtml.push(`<b>${escapeHtml(content)}</b>`);
+          return `\x00BL${blockHtml.length - 1}\x00`;
+        })
+        .replace(/^>\s?(.+)$/gm, (_, content) => {
+          blockHtml.push(`<blockquote>${escapeHtml(content)}</blockquote>`);
+          return `\x00BL${blockHtml.length - 1}\x00`;
+        });
+
+      // --- Inline code extraction ---
       const inlineCodes: string[] = [];
-      let text = part.replace(/`([^`]+)`/g, (_, code) => {
+      text = text.replace(/`([^`]+)`/g, (_, code) => {
         inlineCodes.push(escapeHtml(code));
         return `\x00IC${inlineCodes.length - 1}\x00`;
       });
 
-      // Escape HTML in regular text
+      // Escape HTML in remaining text
       text = escapeHtml(text);
 
       // Bold: **text**
       text = text.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
 
-      // Italic: *text* (not preceded/followed by word chars to avoid false matches)
+      // Strikethrough: ~~text~~
+      text = text.replace(/~~(.+?)~~/g, "<s>$1</s>");
+
+      // Italic: *text* or _text_
       text = text.replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, "<i>$1</i>");
+      text = text.replace(/(?<!\w)_([^_]+?)_(?!\w)/g, "<i>$1</i>");
 
       // Links: [text](url)
       text = text.replace(
@@ -53,6 +70,9 @@ export function claudeToTelegram(markdown: string): string {
         /\x00IC(\d+)\x00/g,
         (_, i) => `<code>${inlineCodes[Number(i)]}</code>`
       );
+
+      // Restore block HTML (headings, blockquotes)
+      text = text.replace(/\x00BL(\d+)\x00/g, (_, i) => blockHtml[Number(i)]);
 
       result += text;
     }
@@ -73,13 +93,21 @@ export function splitMessage(text: string, limit = 4096): string[] {
       break;
     }
 
-    // Try to find a good split point
+    // Find a good split point near the limit
     let splitIdx = remaining.lastIndexOf("\n", limit);
     if (splitIdx < limit * 0.3) {
       splitIdx = remaining.lastIndexOf(" ", limit);
     }
     if (splitIdx < limit * 0.3) {
       splitIdx = limit;
+    }
+
+    // Don't split inside an HTML tag — back up to before the last unclosed '<'
+    const slice = remaining.slice(0, splitIdx);
+    const lastLt = slice.lastIndexOf("<");
+    const lastGt = slice.lastIndexOf(">");
+    if (lastLt > lastGt && lastLt > 0) {
+      splitIdx = lastLt;
     }
 
     messages.push(remaining.slice(0, splitIdx));

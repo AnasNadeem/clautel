@@ -3,19 +3,43 @@
   "version": "1.0.0",
   "description": "Telegram bridge for Claude Code - use Claude from your phone",
   "type": "module",
-  "scripts": {
-    "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+  "bin": {
+    "claude-on-phone": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x dist/cli.js",
+    "start": "tsx src/daemon.ts",
+    "dev": "tsx watch src/daemon.ts",
+    "cli": "tsx src/cli.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "author": "Anas Nadeem",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AnasNadeem/claude-on-phone.git"
+  },
+  "homepage": "https://github.com/AnasNadeem/claude-on-phone",
+  "keywords": [
+    "claude",
+    "anthropic",
+    "telegram",
+    "claude-code",
+    "ai",
+    "mobile"
+  ],
   "dependencies": {
     "@anthropic-ai/claude-code": "^1",
-    "@ngrok/ngrok": "^1",
     "dotenv": "^16",
-    "express": "^4",
     "grammy": "^1"
   },
   "devDependencies": {
-    "@types/express": "^4",
     "@types/node": "^22",
     "tsx": "^4",
     "typescript": "^5"

@@ -34,8 +34,11 @@ export function logTool(toolName: string, detail?: string, tag?: string) {
   console.log(`${ts()} ${prefix(tag)}${YELLOW}TOOL${RESET}  ${toolName}${suffix}`);
 }
 
-export function logApproval(toolName: string, approved: boolean, tag?: string) {
-  const label = approved ? `${GREEN}APPROVED${RESET}` : `${RED}DENIED${RESET}`;
+export function logApproval(toolName: string, result: "allow" | "always" | "deny", tag?: string) {
+  const label =
+    result === "allow"  ? `${GREEN}APPROVED${RESET}` :
+    result === "always" ? `${GREEN}ALWAYS${RESET}  ` :
+                          `${RED}DENIED${RESET}  `;
   console.log(`${ts()} ${prefix(tag)}${label}  ${toolName}`);
 }
 

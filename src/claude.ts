@@ -35,7 +35,7 @@ export interface SendCallbacks {
   onToolApproval: (
     toolName: string,
     input: Record<string, unknown>
-  ) => Promise<boolean>;
+  ) => Promise<"allow" | "always" | "deny">;
   onResult: (result: {
     text: string;
     usage: TokenUsage;
@@ -47,7 +47,7 @@ export interface SendCallbacks {
 
 export const AVAILABLE_MODELS = [
   { id: "claude-opus-4-6", label: "Opus 4.6" },
-  { id: "claude-sonnet-4-5-20250929", label: "Sonnet 4.5" },
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ] as const;
 
@@ -71,24 +71,26 @@ const THINKING_WORDS = [
   "Deciphering...",
 ];
 
-function formatToolStatus(toolName: string): string {
-  const toolLabels: Record<string, string> = {
-    Read: "Reading file...",
-    Bash: "Running command...",
-    Edit: "Editing file...",
-    MultiEdit: "Editing file...",
-    Write: "Writing file...",
-    Glob: "Searching files...",
-    Grep: "Searching code...",
-    WebSearch: "Searching the web...",
-    WebFetch: "Fetching URL...",
-    Task: "Running agent...",
-    TodoWrite: "Updating tasks...",
-    NotebookEdit: "Editing notebook...",
+function formatToolStatus(toolName: string, detail?: string): string {
+  const toolVerbs: Record<string, string> = {
+    Read: "Reading",
+    Bash: "Running",
+    Edit: "Editing",
+    MultiEdit: "Editing",
+    Write: "Writing",
+    Glob: "Searching files",
+    Grep: "Searching code",
+    WebSearch: "Searching",
+    WebFetch: "Fetching",
+    Task: "Running agent",
+    TodoWrite: "Updating tasks",
+    NotebookEdit: "Editing notebook",
   };
-  return toolLabels[toolName] || `Using ${toolName}...`;
+  const verb = toolVerbs[toolName] || `Using ${toolName}`;
+  return detail ? `${verb}: ${detail}` : `${verb}...`;
 }
 
+// Full path/detail for terminal logs
 function toolDetail(toolName: string, input: Record<string, unknown>): string {
   switch (toolName) {
     case "Read":
@@ -101,6 +103,31 @@ function toolDetail(toolName: string, input: Record<string, unknown>): string {
       return String(input.pattern || "");
     case "Grep":
       return String(input.pattern || "");
+    default:
+      return "";
+  }
+}
+
+// Short detail for Telegram status (filename only, truncated commands)
+function toolStatusDetail(toolName: string, input: Record<string, unknown>): string {
+  switch (toolName) {
+    case "Read":
+    case "Write":
+    case "Edit":
+    case "MultiEdit":
+      return path.basename(String(input.file_path || ""));
+    case "NotebookEdit":
+      return path.basename(String(input.notebook_path || ""));
+    case "Bash":
+      return String(input.command || "").slice(0, 60);
+    case "Glob":
+      return String(input.pattern || "");
+    case "Grep":
+      return `"${String(input.pattern || "").slice(0, 40)}"`;
+    case "WebSearch":
+      return `"${String(input.query || "").slice(0, 40)}"`;
+    case "WebFetch":
+      return String(input.url || "").slice(0, 50);
     default:
       return "";
   }
@@ -124,6 +151,7 @@ export class ClaudeBridge {
   private selectedModels = new Map<number, string>();
   private lastQueryEnd = new Map<number, number>();
   private lastPrompts = new Map<number, string>();
+  private sessionApprovedTools = new Map<number, Set<string>>();
 
   constructor(botId: number, workingDir: string, tag: string) {
     this.botId = botId;
@@ -166,6 +194,7 @@ export class ClaudeBridge {
   clearSession(chatId: number): void {
     this.sessions.delete(chatId);
     this.sessionTokens.delete(chatId);
+    this.sessionApprovedTools.delete(chatId);
     this.saveState();
   }
 
@@ -263,32 +292,52 @@ export class ClaudeBridge {
           ...(sessionId ? { resume: sessionId } : {}),
           abortController,
           canUseTool: async (toolName, input, { signal }) => {
+            // Stop thinking words — tool status is more informative
+            clearInterval(thinkingInterval);
+
+            const inp = input as Record<string, unknown>;
+            const detail = toolDetail(toolName, inp);
+            const statusDetail = toolStatusDetail(toolName, inp) || undefined;
+
             if (AUTO_APPROVE_TOOLS.includes(toolName)) {
-              logTool(toolName, toolDetail(toolName, input as Record<string, unknown>), this.tag);
+              logTool(toolName, detail, this.tag);
+              callbacks.onStatusUpdate(formatToolStatus(toolName, statusDetail));
               return { behavior: "allow" as const, updatedInput: input };
             }
 
-            logTool(`${toolName} (awaiting approval)`, toolDetail(toolName, input as Record<string, unknown>), this.tag);
+            // Check if user already approved this tool for the session
+            if (this.sessionApprovedTools.get(chatId)?.has(toolName)) {
+              logTool(`${toolName} (session-approved)`, detail, this.tag);
+              callbacks.onStatusUpdate(formatToolStatus(toolName, statusDetail));
+              return { behavior: "allow" as const, updatedInput: input };
+            }
 
-            const approved = await Promise.race([
-              callbacks.onToolApproval(
-                toolName,
-                input as Record<string, unknown>
-              ),
-              new Promise<boolean>((resolve) => {
+            logTool(`${toolName} (awaiting approval)`, detail, this.tag);
+            callbacks.onStatusUpdate("Waiting for approval...");
+
+            const result = await Promise.race([
+              callbacks.onToolApproval(toolName, inp),
+              new Promise<"deny">((resolve) => {
                 if (signal.aborted) {
-                  resolve(false);
+                  resolve("deny");
                   return;
                 }
-                signal.addEventListener("abort", () => resolve(false), {
+                signal.addEventListener("abort", () => resolve("deny"), {
                   once: true,
                 });
               }),
             ]);
 
-            logApproval(toolName, approved, this.tag);
+            if (result === "always") {
+              if (!this.sessionApprovedTools.has(chatId)) {
+                this.sessionApprovedTools.set(chatId, new Set());
+              }
+              this.sessionApprovedTools.get(chatId)!.add(toolName);
+            }
 
-            if (approved) {
+            logApproval(toolName, result, this.tag);
+
+            if (result === "allow" || result === "always") {
               return { behavior: "allow" as const, updatedInput: input };
             }
             return {
