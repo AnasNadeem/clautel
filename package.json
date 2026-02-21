@@ -6,13 +6,27 @@
   "bin": {
     "claude-on-phone": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/cli.js",
     "start": "tsx src/daemon.ts",
     "dev": "tsx watch src/daemon.ts",
     "cli": "tsx src/cli.ts",
     "prepublishOnly": "npm run build"
   },
+  "keywords": [
+    "claude",
+    "anthropic",
+    "telegram",
+    "claude-code",
+    "ai",
+    "mobile"
+  ],
   "dependencies": {
     "@anthropic-ai/claude-code": "^1",
     "dotenv": "^16",
