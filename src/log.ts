@@ -1,11 +1,13 @@
-const RESET = "\x1b[0m";
-const DIM = "\x1b[2m";
-const CYAN = "\x1b[36m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const RED = "\x1b[31m";
-const MAGENTA = "\x1b[35m";
-const BOLD = "\x1b[1m";
+const isTTY = process.stdout.isTTY ?? false;
+
+const RESET = isTTY ? "\x1b[0m" : "";
+const DIM = isTTY ? "\x1b[2m" : "";
+const CYAN = isTTY ? "\x1b[36m" : "";
+const GREEN = isTTY ? "\x1b[32m" : "";
+const YELLOW = isTTY ? "\x1b[33m" : "";
+const RED = isTTY ? "\x1b[31m" : "";
+const MAGENTA = isTTY ? "\x1b[35m" : "";
+const BOLD = isTTY ? "\x1b[1m" : "";
 
 function ts(): string {
   return DIM + new Date().toLocaleTimeString("en-GB", { hour12: false }) + RESET;
