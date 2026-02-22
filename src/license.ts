@@ -39,13 +39,6 @@ const LICENSE_FILE = path.join(DATA_DIR, "license.json");
 const INTEGRITY_KEY_FILE = path.join(DATA_DIR, ".integrity-key");
 const FLUSH_DEBOUNCE_MS = 5000; // 5 seconds
 
-// Legacy key kept for one-version migration only
-const LEGACY_INTEGRITY_KEY = Buffer.from([
-  0x63, 0x6c, 0x61, 0x75, 0x64, 0x65, 0x2d, 0x6f, 0x6e, 0x2d, 0x70, 0x68,
-  0x6f, 0x6e, 0x65, 0x2d, 0x69, 0x6e, 0x74, 0x65, 0x67, 0x72, 0x69, 0x74,
-  0x79, 0x2d, 0x6b, 0x65, 0x79, 0x2d, 0x76, 0x31,
-]);
-
 // Per-installation random integrity key (cached in memory after first read)
 let _integrityKeyCache: Buffer | null = null;
 
@@ -168,33 +161,6 @@ export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
   return crypto.createHmac("sha256", getIntegrityKey()).update(payload).digest("hex");
 }
 
-function computeLegacyChecksum(state: Omit<LicenseState, "checksum">): string {
-  const payload = JSON.stringify({
-    licenseKey: state.licenseKey,
-    instanceId: state.instanceId,
-    status: state.status,
-    lastValidatedAt: state.lastValidatedAt,
-    lastValidationResult: state.lastValidationResult,
-    graceStartedAt: state.graceStartedAt,
-    warningsSent: state.warningsSent,
-  });
-  return crypto.createHmac("sha256", LEGACY_INTEGRITY_KEY).update(payload).digest("hex");
-}
-
-function computeLegacyChecksumWithPlan(state: Omit<LicenseState, "checksum">): string {
-  const payload = JSON.stringify({
-    licenseKey: state.licenseKey,
-    instanceId: state.instanceId,
-    status: state.status,
-    plan: state.plan,
-    lastValidatedAt: state.lastValidatedAt,
-    lastValidationResult: state.lastValidationResult,
-    graceStartedAt: state.graceStartedAt,
-    warningsSent: state.warningsSent,
-  });
-  return crypto.createHmac("sha256", LEGACY_INTEGRITY_KEY).update(payload).digest("hex");
-}
-
 export function generateInstanceName(ownerId?: number): string {
   const raw = `${os.hostname()}|${os.platform()}|${os.arch()}|${ownerId ?? ""}`;
   return crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
@@ -227,29 +193,10 @@ export function loadLicense(): LicenseState {
 
     const { checksum, ...rest } = raw as LicenseState;
 
-    // Try current per-install key checksum (with plan)
     const expected = computeChecksum(rest);
     if (checksum === expected) return raw as LicenseState;
 
-    // Try legacy hardcoded key checksum with plan (migration from old version)
-    const legacyWithPlan = computeLegacyChecksumWithPlan(rest);
-    if (checksum === legacyWithPlan) {
-      // Valid legacy format with plan — re-save with per-install key
-      const migrated: LicenseState = { ...rest, checksum: computeChecksum(rest) };
-      saveLicense(migrated);
-      return migrated;
-    }
-
-    // Try legacy hardcoded key checksum without plan (oldest format)
-    const legacyNoPlan = computeLegacyChecksum(rest);
-    if (checksum === legacyNoPlan) {
-      // Valid oldest format — re-save with plan field and per-install key
-      const migrated: LicenseState = { ...rest, checksum: computeChecksum(rest) };
-      saveLicense(migrated);
-      return migrated;
-    }
-
-    // Tampered
+    // Checksum mismatch — tampered or corrupted
     const expired = defaultLicenseState();
     expired.status = "expired";
     saveLicense(expired);
