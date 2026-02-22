@@ -12,7 +12,12 @@ import {
 } from "./formatter.js";
 import type { AskUserQuestion } from "./claude.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
-import { checkLicenseForQuery, getPaymentUrl, detectClaudePlan } from "./license.js";
+import { checkLicenseForQuery, getPaymentUrl, detectClaudePlan, LICENSE_CANARY } from "./license.js";
+
+// Cross-module integrity: verify license module hasn't been patched
+if (LICENSE_CANARY !== "L1c3ns3-Ch3ck-V2") {
+  throw new Error("Integrity check failed: license module has been tampered with.");
+}
 
 const TYPING_INTERVAL_MS = 4000;
 const EDIT_DEBOUNCE_MS = 1500;

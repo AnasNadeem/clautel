@@ -18,6 +18,9 @@
     "dev": "tsx watch src/daemon.ts",
     "cli": "tsx src/cli.ts",
     "test": "node --import tsx --test tests/*.test.ts",
+    "keygen": "node scripts/keygen.mjs",
+    "proxy:dev": "cd proxy && npx wrangler dev",
+    "proxy:deploy": "cd proxy && npx wrangler deploy",
     "prepublishOnly": "npm run build"
   },
   "author": "Anas Nadeem",
