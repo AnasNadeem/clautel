@@ -129,7 +129,7 @@ async function cmdSetup(): Promise<void> {
   console.log("Step 3/3: License");
   console.log(`  Get a license at: ${PAYMENT_URL}`);
   console.log("  Already have a key? Paste it below.");
-  console.log("  Or press Enter to start a 7-day free trial (50 queries).\n");
+  console.log("  Or press Enter to start a 7-day free trial.\n");
 
   const licenseKeyInput = (await ask("  License key (Enter for free trial): ")).trim();
   rl.close();
@@ -145,11 +145,11 @@ async function cmdSetup(): Promise<void> {
       console.log(`  Activation failed: ${result.error}`);
       console.log("  Starting with free trial instead.\n");
       saveLicense(defaultLicenseState());
-      licenseStatus = "Free trial (7 days, 50 queries)";
+      licenseStatus = "Free trial (7 days)";
     }
   } else {
     saveLicense(defaultLicenseState());
-    licenseStatus = "Free trial (7 days, 50 queries)";
+    licenseStatus = "Free trial (7 days)";
   }
 
   // Completion summary

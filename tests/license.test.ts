@@ -23,7 +23,6 @@ const {
   getLicenseInfo,
   invalidateCache,
   flushLicenseSync,
-  TRIAL_MAX_QUERIES,
   TRIAL_DURATION_DAYS,
   PAYMENT_URL,
 } = await import("../src/license.js");
@@ -53,7 +52,6 @@ describe("license - state I/O", () => {
     assert.equal(state.status, "trial");
     assert.equal(state.licenseKey, null);
     assert.equal(state.instanceId, null);
-    assert.equal(state.trialQueriesUsed, 0);
     assert.equal(state.trialStartedAt, null);
     assert.ok(state.checksum, "checksum should be set");
   });
@@ -61,17 +59,14 @@ describe("license - state I/O", () => {
   it("loadLicense returns default when no file exists", () => {
     const state = loadLicense();
     assert.equal(state.status, "trial");
-    assert.equal(state.trialQueriesUsed, 0);
   });
 
   it("saveLicense and loadLicense round-trip", () => {
     const state = defaultLicenseState();
-    state.trialQueriesUsed = 5;
     state.trialStartedAt = new Date().toISOString();
     saveLicense(state);
 
     const loaded = loadLicense();
-    assert.equal(loaded.trialQueriesUsed, 5);
     assert.equal(loaded.trialStartedAt, state.trialStartedAt);
     assert.equal(loaded.status, "trial");
   });
@@ -100,19 +95,19 @@ describe("license - checksum / anti-tamper", () => {
     const state = defaultLicenseState();
     const { checksum: _, ...rest } = state;
     const cs1 = computeChecksum(rest);
-    rest.trialQueriesUsed = 10;
+    rest.warningsSent = 10;
     const cs2 = computeChecksum(rest);
     assert.notEqual(cs1, cs2);
   });
 
   it("tampered license.json is detected and treated as expired", () => {
     const state = defaultLicenseState();
-    state.trialQueriesUsed = 5;
+    state.warningsSent = 5;
     saveLicense(state);
 
-    // Tamper: change queries but keep old checksum
+    // Tamper: change warningsSent but keep old checksum
     const raw = JSON.parse(fs.readFileSync(LICENSE_FILE, "utf-8"));
-    raw.trialQueriesUsed = 0;
+    raw.warningsSent = 0;
     fs.writeFileSync(LICENSE_FILE, JSON.stringify(raw, null, 2));
 
     // Must invalidate cache so loadLicense reads the tampered file from disk
@@ -142,64 +137,15 @@ describe("license - trial", () => {
     flushLicenseSync();
     const state = loadLicense();
     assert.ok(state.trialStartedAt, "trialStartedAt should be set");
-    assert.equal(state.trialQueriesUsed, 1);
   });
 
-  it("increments query counter on each call", () => {
-    checkLicenseForQuery();
-    checkLicenseForQuery();
-    checkLicenseForQuery();
-
-    flushLicenseSync();
-    const state = loadLicense();
-    assert.equal(state.trialQueriesUsed, 3);
-  });
-
-  it("returns warning at 50% queries", () => {
+  it("allows queries within trial period", () => {
     const state = defaultLicenseState();
     state.trialStartedAt = new Date().toISOString();
-    state.trialQueriesUsed = TRIAL_MAX_QUERIES / 2 - 1;
     saveLicense(state);
 
     const result = checkLicenseForQuery();
     assert.equal(result.allowed, true);
-    assert.ok(result.warning, "should have warning at 50%");
-    assert.ok(result.warning!.includes("remaining"));
-  });
-
-  it("returns warning at 80% queries", () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date().toISOString();
-    state.trialQueriesUsed = Math.floor(TRIAL_MAX_QUERIES * 0.8) - 1;
-    saveLicense(state);
-
-    const result = checkLicenseForQuery();
-    assert.equal(result.allowed, true);
-    assert.ok(result.warning, "should have warning at 80%");
-    assert.ok(result.warning!.includes(PAYMENT_URL));
-  });
-
-  it("returns warning at 95% queries", () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date().toISOString();
-    state.trialQueriesUsed = Math.floor(TRIAL_MAX_QUERIES * 0.95);
-    saveLicense(state);
-
-    const result = checkLicenseForQuery();
-    assert.equal(result.allowed, true);
-    assert.ok(result.warning, "should have warning at 95%");
-    assert.ok(result.warning!.includes("Last"));
-  });
-
-  it("blocks when query limit reached", () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date().toISOString();
-    state.trialQueriesUsed = TRIAL_MAX_QUERIES;
-    saveLicense(state);
-
-    const result = checkLicenseForQuery();
-    assert.equal(result.allowed, false);
-    assert.ok(result.reason!.includes("query limit"));
   });
 
   it("blocks when trial time expired", () => {
@@ -207,7 +153,6 @@ describe("license - trial", () => {
     state.trialStartedAt = new Date(
       Date.now() - (TRIAL_DURATION_DAYS + 1) * 24 * 60 * 60 * 1000
     ).toISOString();
-    state.trialQueriesUsed = 5;
     saveLicense(state);
 
     const result = checkLicenseForQuery();
@@ -220,14 +165,12 @@ describe("license - trial", () => {
     state.trialStartedAt = new Date(
       Date.now() - (TRIAL_DURATION_DAYS - 1) * 24 * 60 * 60 * 1000
     ).toISOString();
-    state.trialQueriesUsed = 0;
     saveLicense(state);
 
     const result = checkLicenseForQuery();
     assert.equal(result.allowed, true);
-    if (result.warning) {
-      assert.ok(result.warning.includes("day") || result.warning.includes("remaining"));
-    }
+    assert.ok(result.warning, "should have warning at 1 day remaining");
+    assert.ok(result.warning!.includes("day"));
   });
 });
 
@@ -311,17 +254,6 @@ describe("license - startup checks", () => {
     state.trialStartedAt = new Date(
       Date.now() - (TRIAL_DURATION_DAYS + 1) * 24 * 60 * 60 * 1000
     ).toISOString();
-    state.trialQueriesUsed = 5;
-    saveLicense(state);
-
-    const result = await checkLicenseForStartup();
-    assert.equal(result.allowed, false);
-  });
-
-  it("blocks when all trial queries used on startup", async () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date().toISOString();
-    state.trialQueriesUsed = TRIAL_MAX_QUERIES;
     saveLicense(state);
 
     const result = await checkLicenseForStartup();
@@ -365,7 +297,7 @@ describe("license - getLicenseInfo", () => {
   it("shows trial info for new installation", () => {
     const info = getLicenseInfo();
     assert.ok(info.includes("trial"));
-    assert.ok(info.includes(`0/${TRIAL_MAX_QUERIES}`));
+    assert.ok(info.includes(`${TRIAL_DURATION_DAYS} days`));
   });
 
   it("shows active info for active license", () => {

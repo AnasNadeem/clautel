@@ -7,7 +7,6 @@ import { DATA_DIR } from "./config.js";
 // --- Constants ---
 
 export const TRIAL_DURATION_DAYS = 7;
-export const TRIAL_MAX_QUERIES = 50;
 const VALIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const OFFLINE_GRACE_HOURS = 72;
 const GRACE_PERIOD_MS = 48 * 60 * 60 * 1000; // 48 hours
@@ -33,7 +32,6 @@ export interface LicenseState {
   instanceId: string | null;
   status: "trial" | "active" | "grace" | "expired";
   trialStartedAt: string | null;
-  trialQueriesUsed: number;
   lastValidatedAt: string | null;
   lastValidationResult: boolean;
   graceStartedAt: string | null;
@@ -59,7 +57,6 @@ export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
     instanceId: state.instanceId,
     status: state.status,
     trialStartedAt: state.trialStartedAt,
-    trialQueriesUsed: state.trialQueriesUsed,
     lastValidatedAt: state.lastValidatedAt,
     lastValidationResult: state.lastValidationResult,
     graceStartedAt: state.graceStartedAt,
@@ -81,7 +78,6 @@ export function defaultLicenseState(): LicenseState {
     instanceId: null,
     status: "trial",
     trialStartedAt: null,
-    trialQueriesUsed: 0,
     lastValidatedAt: null,
     lastValidationResult: false,
     graceStartedAt: null,
@@ -266,7 +262,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
   invalidateCache();
   const state = getCachedLicense();
 
-  // Trial — allowed if within limits
+  // Trial — allowed if within time limit
   if (state.status === "trial") {
     if (state.trialStartedAt) {
       const elapsed = Date.now() - new Date(state.trialStartedAt).getTime();
@@ -275,11 +271,6 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
         saveLicense(state);
         return { allowed: false, reason: "Free trial expired." };
       }
-    }
-    if (state.trialQueriesUsed >= TRIAL_MAX_QUERIES) {
-      state.status = "expired";
-      saveLicense(state);
-      return { allowed: false, reason: "Free trial query limit reached." };
     }
     return { allowed: true };
   }
@@ -370,6 +361,7 @@ export function checkLicenseForQuery(): LicenseCheckResult {
     // Initialize trial on first query
     if (!state.trialStartedAt) {
       state.trialStartedAt = new Date().toISOString();
+      markDirty();
     }
 
     // Check time limit
@@ -380,35 +372,13 @@ export function checkLicenseForQuery(): LicenseCheckResult {
       return { allowed: false, reason: `Free trial expired.\n\nGet a license: ${PAYMENT_URL}` };
     }
 
-    // Check query limit
-    if (state.trialQueriesUsed >= TRIAL_MAX_QUERIES) {
-      state.status = "expired";
-      markDirty();
-      return { allowed: false, reason: `Free trial query limit reached.\n\nGet a license: ${PAYMENT_URL}` };
-    }
-
-    // Increment counter
-    state.trialQueriesUsed++;
-    markDirty();
-
-    // Warnings at thresholds
-    const remaining = TRIAL_MAX_QUERIES - state.trialQueriesUsed;
     const daysRemaining = Math.ceil(
       (TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000 - elapsed) / (24 * 60 * 60 * 1000)
     );
 
     let warning: string | undefined;
-
-    if (remaining <= Math.floor(TRIAL_MAX_QUERIES * 0.05)) {
-      warning = `Last ${remaining} queries! Get a license to continue: ${PAYMENT_URL}`;
-    } else if (remaining <= Math.floor(TRIAL_MAX_QUERIES * 0.2)) {
-      warning = `Free trial: ${remaining} queries remaining. Get a license: ${PAYMENT_URL}`;
-    } else if (remaining <= Math.floor(TRIAL_MAX_QUERIES * 0.5)) {
-      warning = `Free trial: ${remaining} queries remaining`;
-    }
-
-    if (!warning && daysRemaining <= 2) {
-      warning = `Free trial: ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""} remaining`;
+    if (daysRemaining <= 2) {
+      warning = `Free trial: ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""} remaining. Get a license: ${PAYMENT_URL}`;
     }
 
     return { allowed: true, warning };
@@ -478,15 +448,14 @@ export function getLicenseInfo(): string {
 
   if (state.status === "trial") {
     if (!state.trialStartedAt) {
-      return `Status: Free trial (not started)\nQueries: 0/${TRIAL_MAX_QUERIES}\nDuration: ${TRIAL_DURATION_DAYS} days`;
+      return `Status: Free trial (not started)\nDuration: ${TRIAL_DURATION_DAYS} days`;
     }
     const elapsed = Date.now() - new Date(state.trialStartedAt).getTime();
     const daysRemaining = Math.max(
       0,
       Math.ceil((TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000 - elapsed) / (24 * 60 * 60 * 1000))
     );
-    const queriesRemaining = Math.max(0, TRIAL_MAX_QUERIES - state.trialQueriesUsed);
-    return `Status: Free trial\nQueries: ${state.trialQueriesUsed}/${TRIAL_MAX_QUERIES} (${queriesRemaining} remaining)\nDays remaining: ${daysRemaining}\n\nUpgrade: ${PAYMENT_URL}`;
+    return `Status: Free trial\nDays remaining: ${daysRemaining}\n\nUpgrade: ${PAYMENT_URL}`;
   }
 
   if (state.status === "active") {
