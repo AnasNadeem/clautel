@@ -38,6 +38,9 @@ DM your manager bot to manage project bots:
 | `/add TOKEN /path/to/repo` | Attach a new worker bot to a project |
 | `/bots` | List active bots |
 | `/remove @botname` | Stop and remove a bot |
+| `/subscribe` | Get a license or upgrade |
+| `/subscription` | View license, billing & cancel |
+| `/feedback` | Send feedback or report an issue |
 | `/cancel` | Cancel current operation |
 
 Then DM each worker bot directly to use Claude Code:
@@ -51,16 +54,75 @@ Then DM each worker bot directly to use Claude Code:
 | `/session` | Get session ID to resume in CLI |
 | `/new` | Start a fresh session |
 | `/cancel` | Abort current operation |
+| `/feedback` | Send feedback or report an issue |
 
 ## CLI
 
 ```bash
-claude-on-phone setup    # configure token and user ID
-claude-on-phone start    # start daemon in background
-claude-on-phone stop     # stop daemon
-claude-on-phone status   # check if running
-claude-on-phone logs     # tail logs (Ctrl+C to exit)
+claude-on-phone setup              # configure token, user ID, and license
+claude-on-phone start              # start daemon in background
+claude-on-phone stop               # stop daemon
+claude-on-phone status             # check if running
+claude-on-phone logs               # tail logs (Ctrl+C to exit)
+claude-on-phone activate <key>     # activate a license key
+claude-on-phone deactivate         # free this machine's activation slot
+claude-on-phone license            # show current license status
+claude-on-phone install-service    # install as macOS launchd service
+claude-on-phone uninstall-service  # remove the launchd service
 ```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Your Machine                                            │
+│                                                          │
+│  ┌─────────┐    ┌─────────────┐    ┌──────────────────┐ │
+│  │ Manager │    │ Worker Bot  │    │ Worker Bot       │ │
+│  │   Bot   │    │ (project A) │    │ (project B)      │ │
+│  └────┬────┘    └──────┬──────┘    └────────┬─────────┘ │
+│       │               │                    │           │
+│       └───────┬───────┴────────────────────┘           │
+│               │                                         │
+│        ┌──────┴──────┐                                  │
+│        │   Daemon    │                                  │
+│        │ (daemon.ts) │                                  │
+│        └──────┬──────┘                                  │
+│               │                                         │
+│        ┌──────┴──────┐    ┌──────────────────┐         │
+│        │ Claude Code │    │   License Gate   │         │
+│        │  (claude.ts)│    │  (license.ts)    │         │
+│        └─────────────┘    └────────┬─────────┘         │
+└────────────────────────────────────┼────────────────────┘
+                                     │
+                          ┌──────────┴──────────┐
+                          │  License Proxy      │
+                          │  (Cloudflare Worker) │
+                          └──────────┬──────────┘
+                                     │
+                          ┌──────────┴──────────┐
+                          │  DodoPayments API   │
+                          └─────────────────────┘
+```
+
+## Security
+
+License validation uses a layered defense:
+
+**Client-side:**
+- Per-installation random HMAC key (`~/.claude-on-phone/.integrity-key`) — prevents license.json forgery across machines
+- Cross-module integrity canaries — daemon, worker, and claude modules verify the license module hasn't been patched at load time
+- Runtime function hash verification — daemon periodically checks that `checkLicenseForQuery` hasn't been hot-patched
+- Three-gate license checks — startup gate (daemon.ts), per-query gate (worker.ts), and secondary gate (claude.ts)
+- Strict response validation — HTTP 200 responses are verified to contain expected fields, preventing empty-response bypass
+
+**Server-side (Cloudflare Worker proxy):**
+- Client never talks to the payment API directly — all validation goes through the proxy
+- Proxy returns Ed25519-signed tokens — the client can verify signatures (public key embedded) but cannot forge them (private key stays on Cloudflare)
+- Signed tokens have 1-hour expiry with 24-hour offline cache
+- Cryptographic verification on every validation and activation
+
+See [PAYMENT.md](PAYMENT.md) for full licensing details.
 
 ## Requirements
 
