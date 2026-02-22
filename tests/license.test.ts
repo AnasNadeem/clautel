@@ -21,6 +21,8 @@ const {
   checkLicenseForQuery,
   checkLicenseForStartup,
   getLicenseInfo,
+  invalidateCache,
+  flushLicenseSync,
   TRIAL_MAX_QUERIES,
   TRIAL_DURATION_DAYS,
   PAYMENT_URL,
@@ -31,6 +33,9 @@ const { DATA_DIR } = await import("../src/config.js");
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
 
 function cleanup() {
+  // Flush any pending debounced writes, then clear cache and file
+  flushLicenseSync();
+  invalidateCache();
   try { fs.unlinkSync(LICENSE_FILE); } catch {}
 }
 
@@ -110,6 +115,8 @@ describe("license - checksum / anti-tamper", () => {
     raw.trialQueriesUsed = 0;
     fs.writeFileSync(LICENSE_FILE, JSON.stringify(raw, null, 2));
 
+    // Must invalidate cache so loadLicense reads the tampered file from disk
+    invalidateCache();
     const loaded = loadLicense();
     assert.equal(loaded.status, "expired");
   });
@@ -117,6 +124,7 @@ describe("license - checksum / anti-tamper", () => {
   it("corrupted file returns default state", () => {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(LICENSE_FILE, "not valid json{{{");
+    invalidateCache();
     const loaded = loadLicense();
     assert.equal(loaded.status, "trial");
   });
@@ -130,6 +138,8 @@ describe("license - trial", () => {
     const result = checkLicenseForQuery();
     assert.equal(result.allowed, true);
 
+    // Flush debounced write so we can read from disk
+    flushLicenseSync();
     const state = loadLicense();
     assert.ok(state.trialStartedAt, "trialStartedAt should be set");
     assert.equal(state.trialQueriesUsed, 1);
@@ -139,6 +149,8 @@ describe("license - trial", () => {
     checkLicenseForQuery();
     checkLicenseForQuery();
     checkLicenseForQuery();
+
+    flushLicenseSync();
     const state = loadLicense();
     assert.equal(state.trialQueriesUsed, 3);
   });
@@ -213,8 +225,6 @@ describe("license - trial", () => {
 
     const result = checkLicenseForQuery();
     assert.equal(result.allowed, true);
-    // At this point remaining queries are high, but time is low
-    // Warning should mention days remaining
     if (result.warning) {
       assert.ok(result.warning.includes("day") || result.warning.includes("remaining"));
     }

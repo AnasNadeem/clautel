@@ -17,6 +17,7 @@ const DODO_BASE_URL_LIVE = "https://live.dodopayments.com";
 const DODO_BASE_URL_TEST = "https://test.dodopayments.com";
 
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
+const FLUSH_DEBOUNCE_MS = 5000; // 5 seconds
 
 // Anti-tamper: embedded as byte array so it's not a readable string in source/dist
 const INTEGRITY_KEY = Buffer.from([
@@ -98,10 +99,8 @@ export function loadLicense(): LicenseState {
     const { checksum, ...rest } = raw;
     const expected = computeChecksum(rest);
     if (checksum !== expected) {
-      // Tampered — treat as expired
       const expired = defaultLicenseState();
       expired.status = "expired";
-      expired.checksum = computeChecksum({ ...expired, checksum: undefined } as unknown as Omit<LicenseState, "checksum">);
       saveLicense(expired);
       return expired;
     }
@@ -116,8 +115,54 @@ export function saveLicense(state: LicenseState): void {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   // Recompute checksum before saving
   const { checksum: _, ...rest } = state;
-  const fresh = { ...rest, checksum: computeChecksum(rest) };
+  const fresh: LicenseState = { ...rest, checksum: computeChecksum(rest) };
   fs.writeFileSync(LICENSE_FILE, JSON.stringify(fresh, null, 2), { mode: 0o600 });
+  // Keep cache in sync after direct disk write
+  _cache = fresh;
+}
+
+// --- In-Memory Cache ---
+// Avoids synchronous disk I/O on every query. Loaded once, updated in-memory,
+// flushed to disk with a debounced timer.
+
+let _cache: LicenseState | null = null;
+let _flushTimer: NodeJS.Timeout | null = null;
+let _dirty = false;
+
+function getCachedLicense(): LicenseState {
+  if (!_cache) {
+    _cache = loadLicense();
+  }
+  return _cache;
+}
+
+function markDirty(): void {
+  _dirty = true;
+  if (_flushTimer) return; // already scheduled
+  _flushTimer = setTimeout(() => {
+    _flushTimer = null;
+    if (_dirty && _cache) {
+      _dirty = false;
+      saveLicense(_cache);
+    }
+  }, FLUSH_DEBOUNCE_MS);
+}
+
+/** Flush any pending cache writes to disk immediately (call on shutdown). */
+export function flushLicenseSync(): void {
+  if (_flushTimer) {
+    clearTimeout(_flushTimer);
+    _flushTimer = null;
+  }
+  if (_dirty && _cache) {
+    _dirty = false;
+    saveLicense(_cache);
+  }
+}
+
+/** Discard cache so next read comes from disk. */
+export function invalidateCache(): void {
+  _cache = null;
 }
 
 // --- Dodo API ---
@@ -144,7 +189,8 @@ export async function activateLicense(
       state.lastValidationResult = true;
       state.graceStartedAt = null;
       state.warningsSent = 0;
-      saveLicense(state);
+      saveLicense(state); // immediate disk write
+      invalidateCache();
       return { success: true, instanceId: data.instance_id };
     }
 
@@ -201,7 +247,8 @@ export async function deactivateLicense(
       state.instanceId = null;
       state.status = "expired";
       state.lastValidationResult = false;
-      saveLicense(state);
+      saveLicense(state); // immediate disk write
+      invalidateCache();
       return { success: true };
     }
 
@@ -215,7 +262,9 @@ export async function deactivateLicense(
 // --- Startup Check ---
 
 export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
-  const state = loadLicense();
+  // Always read fresh from disk at startup
+  invalidateCache();
+  const state = getCachedLicense();
 
   // Trial — allowed if within limits
   if (state.status === "trial") {
@@ -312,10 +361,10 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
   return { allowed: false, reason: "Unknown license state." };
 }
 
-// --- Per-Query Check (Sync, Fast) ---
+// --- Per-Query Check (Fast, In-Memory) ---
 
 export function checkLicenseForQuery(): LicenseCheckResult {
-  const state = loadLicense();
+  const state = getCachedLicense();
 
   if (state.status === "trial") {
     // Initialize trial on first query
@@ -327,20 +376,20 @@ export function checkLicenseForQuery(): LicenseCheckResult {
     const elapsed = Date.now() - new Date(state.trialStartedAt).getTime();
     if (elapsed > TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000) {
       state.status = "expired";
-      saveLicense(state);
+      markDirty();
       return { allowed: false, reason: `Free trial expired.\n\nGet a license: ${PAYMENT_URL}` };
     }
 
     // Check query limit
     if (state.trialQueriesUsed >= TRIAL_MAX_QUERIES) {
       state.status = "expired";
-      saveLicense(state);
+      markDirty();
       return { allowed: false, reason: `Free trial query limit reached.\n\nGet a license: ${PAYMENT_URL}` };
     }
 
     // Increment counter
     state.trialQueriesUsed++;
-    saveLicense(state);
+    markDirty();
 
     // Warnings at thresholds
     const remaining = TRIAL_MAX_QUERIES - state.trialQueriesUsed;
@@ -376,7 +425,7 @@ export function checkLicenseForQuery(): LicenseCheckResult {
     const graceElapsed = Date.now() - new Date(state.graceStartedAt).getTime();
     if (graceElapsed >= GRACE_PERIOD_MS) {
       state.status = "expired";
-      saveLicense(state);
+      markDirty();
       return { allowed: false, reason: `License expired.\n\nRenew: ${PAYMENT_URL}` };
     }
 
@@ -395,7 +444,7 @@ export function checkLicenseForQuery(): LicenseCheckResult {
 
 export function startPeriodicValidation(): NodeJS.Timeout {
   return setInterval(async () => {
-    const state = loadLicense();
+    const state = getCachedLicense();
     if (state.status !== "active" && state.status !== "grace") return;
 
     const result = await validateLicense(state);
@@ -408,7 +457,7 @@ export function startPeriodicValidation(): NodeJS.Timeout {
       }
       state.lastValidatedAt = new Date().toISOString();
       state.lastValidationResult = true;
-      saveLicense(state);
+      saveLicense(state); // important state change — write immediately
     } else if (result === "invalid") {
       if (state.status === "active") {
         state.status = "grace";
@@ -416,7 +465,7 @@ export function startPeriodicValidation(): NodeJS.Timeout {
         state.warningsSent = 0;
       }
       state.lastValidationResult = false;
-      saveLicense(state);
+      saveLicense(state); // important state change — write immediately
     }
     // result === "error" — network failure, no state change
   }, VALIDATION_INTERVAL_MS);
@@ -425,7 +474,7 @@ export function startPeriodicValidation(): NodeJS.Timeout {
 // --- License Info Display ---
 
 export function getLicenseInfo(): string {
-  const state = loadLicense();
+  const state = getCachedLicense();
 
   if (state.status === "trial") {
     if (!state.trialStartedAt) {

@@ -106,6 +106,8 @@ async function cmdSetup(): Promise<void> {
       console.error(`License activation failed: ${result.error}`);
       console.log("You can activate later: claude-on-phone activate <key>");
       console.log("Starting with 7-day free trial instead.");
+      const { defaultLicenseState: defaultState, saveLicense: saveLic } = await import("./license.js");
+      saveLic(defaultState());
     }
   } else {
     // Initialize trial state
@@ -278,7 +280,10 @@ async function cmdActivate(): Promise<void> {
       const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
       ownerId = cfg.TELEGRAM_OWNER_ID;
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`Warning: Could not read config file: ${(err as Error).message}`);
+    console.warn("License will be activated without owner ID binding.");
+  }
 
   const { activateLicense } = await import("./license.js");
   console.log("Activating license...");
