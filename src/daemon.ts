@@ -11,7 +11,7 @@ import { DATA_DIR } from "./config.js";
 import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl } from "./license.js";
 
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
-const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const HEALTH_CHECK_INTERVAL_MS = 60_000; // 1 minute — fast recovery after sleep/network loss
 
 const activeWorkers = new Map<number, { config: BotConfig; bot: Bot; bridge: ClaudeBridge }>();
 let healthCheckTimer: NodeJS.Timeout | null = null;
@@ -47,6 +47,7 @@ async function startWorker(botConfig: BotConfig): Promise<void> {
   activeWorkers.set(botConfig.id, { config: botConfig, bot, bridge });
 
   // Fire-and-forget: polling runs in background
+  // On error, remove from activeWorkers but KEEP in bots.json so health check restarts it
   bot.start().catch((err: Error) => {
     console.error(`[${botConfig.username}] Polling error:`, err.message);
     activeWorkers.delete(botConfig.id);
@@ -117,22 +118,43 @@ async function main() {
     }
   }
 
-  // Periodic health check: verify worker bots are still reachable
+  // Periodic health check: restart dead workers and recover saved bots
   healthCheckTimer = setInterval(async () => {
-    const deadIds: number[] = [];
+    // 1. Check running workers are still reachable
+    const deadConfigs: BotConfig[] = [];
     for (const [id, worker] of activeWorkers) {
       try {
         await worker.bot.api.getMe();
       } catch (err) {
-        console.error(`[${worker.config.username}] Health check failed, removing: ${(err as Error).message}`);
+        console.error(`[${worker.config.username}] Health check failed, will restart: ${(err as Error).message}`);
+        deadConfigs.push(worker.config);
         worker.bridge.abortAll();
         try { await worker.bot.stop(); } catch {}
-        deadIds.push(id);
+        activeWorkers.delete(id);
       }
     }
-    for (const id of deadIds) {
-      activeWorkers.delete(id);
-      removeBot(id);
+
+    // 2. Restart workers that just failed
+    for (const config of deadConfigs) {
+      try {
+        await startWorker(config);
+        console.log(`[${config.username}] Restarted after health check failure`);
+      } catch (err) {
+        console.error(`[${config.username}] Restart failed: ${(err as Error).message}`);
+      }
+    }
+
+    // 3. Start any saved bots that aren't currently running (e.g. from polling errors, previous crash)
+    const savedBots = loadBots();
+    for (const botConfig of savedBots) {
+      if (!activeWorkers.has(botConfig.id)) {
+        try {
+          await startWorker(botConfig);
+          console.log(`[${botConfig.username}] Recovered from saved config`);
+        } catch (err) {
+          console.error(`[${botConfig.username}] Recovery failed: ${(err as Error).message}`);
+        }
+      }
     }
   }, HEALTH_CHECK_INTERVAL_MS);
 

@@ -153,10 +153,17 @@ async function cmdSetup(): Promise<void> {
   console.log(`  Bot: @${botUsername}`);
   console.log(`  Owner: ${ownerId}`);
   console.log("  License: Active");
-  console.log("  Run: claude-on-phone start");
+
+  // Auto-install launchd service on macOS for startup persistence
+  if (process.platform === "darwin") {
+    console.log("\nInstalling auto-start service...");
+    await cmdInstallService();
+  } else {
+    console.log("  Run: claude-on-phone start");
+  }
 }
 
-function cmdStart(): void {
+async function cmdStart(): Promise<void> {
   const pid = readPid();
   if (pid && isRunning(pid)) {
     console.log(`Already running (PID ${pid})`);
@@ -166,6 +173,13 @@ function cmdStart(): void {
   if (!fs.existsSync(CONFIG_FILE)) {
     console.error("Not configured. Run: claude-on-phone setup");
     process.exit(1);
+  }
+
+  // On macOS, install launchd service if not already present (auto-start on login + crash recovery)
+  if (process.platform === "darwin" && !fs.existsSync(getPlistPath())) {
+    console.log("Installing auto-start service...");
+    await cmdInstallService();
+    return;
   }
 
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -228,7 +242,7 @@ function getPlistPath(): string {
   return path.join(os.homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 }
 
-function cmdInstallService(): void {
+async function cmdInstallService(): Promise<void> {
   if (process.platform !== "darwin") {
     console.error("install-service is only supported on macOS (launchd).");
     process.exit(1);
@@ -241,6 +255,15 @@ function cmdInstallService(): void {
 
   const [cmd, args] = DAEMON_CMD;
   const programArgs = [cmd, ...args];
+
+  // Capture environment variables needed by the daemon
+  const envEntries: string[] = [
+    `    <key>PATH</key>\n    <string>${process.env.PATH || "/usr/local/bin:/usr/bin:/bin"}</string>`,
+    `    <key>HOME</key>\n    <string>${os.homedir()}</string>`,
+  ];
+  if (process.env.ANTHROPIC_API_KEY) {
+    envEntries.push(`    <key>ANTHROPIC_API_KEY</key>\n    <string>${process.env.ANTHROPIC_API_KEY}</string>`);
+  }
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -262,14 +285,28 @@ function cmdInstallService(): void {
   <string>${LOG_FILE}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
-    <string>${process.env.PATH || "/usr/local/bin:/usr/bin:/bin"}</string>
+${envEntries.join("\n")}
   </dict>
 </dict>
 </plist>`;
 
+  // Stop any manually-started daemon first to avoid conflict
+  const existingPid = readPid();
+  if (existingPid && isRunning(existingPid)) {
+    process.kill(existingPid, "SIGTERM");
+    fs.rmSync(PID_FILE, { force: true });
+  }
+
   const agentsDir = path.dirname(getPlistPath());
   fs.mkdirSync(agentsDir, { recursive: true });
+
+  // Unload existing service if present (for clean reinstall)
+  if (fs.existsSync(getPlistPath())) {
+    try { spawn("launchctl", ["unload", getPlistPath()], { stdio: "ignore" }).unref(); } catch {}
+    // Brief wait for unload to complete
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
   fs.writeFileSync(getPlistPath(), plist);
 
   const load = spawn("launchctl", ["load", getPlistPath()], { stdio: "inherit" });
@@ -391,7 +428,7 @@ switch (command) {
     cmdSetup().catch((err) => { console.error(err); process.exit(1); });
     break;
   case "start":
-    cmdStart();
+    cmdStart().catch((err) => { console.error(err); process.exit(1); });
     break;
   case "stop":
     cmdStop();
@@ -412,7 +449,7 @@ switch (command) {
     cmdLicense().catch((err) => { console.error(err); process.exit(1); });
     break;
   case "install-service":
-    cmdInstallService();
+    cmdInstallService().catch((err) => { console.error(err); process.exit(1); });
     break;
   case "uninstall-service":
     cmdUninstallService();
