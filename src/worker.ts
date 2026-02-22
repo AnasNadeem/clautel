@@ -12,7 +12,7 @@ import {
 } from "./formatter.js";
 import type { AskUserQuestion } from "./claude.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
-import { checkLicenseForQuery } from "./license.js";
+import { checkLicenseForQuery, getPaymentUrl, detectClaudePlan } from "./license.js";
 
 const TYPING_INTERVAL_MS = 4000;
 const EDIT_DEBOUNCE_MS = 1500;
@@ -165,7 +165,8 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
       // License check — gate every query
       const licenseCheck = checkLicenseForQuery();
       if (!licenseCheck.allowed) {
-        await bot.api.sendMessage(chatId, licenseCheck.reason || "License required.");
+        const reason = licenseCheck.reason || `License required.\n\nGet a license: ${getPaymentUrl(detectClaudePlan().tier)}`;
+        await bot.api.sendMessage(chatId, reason);
         return;
       }
       if (licenseCheck.warning) {

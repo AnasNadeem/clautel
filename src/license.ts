@@ -16,8 +16,8 @@ const SUCCESS_PAGE_URL = "https://whoareyouanas.com/claude-on-phone/success";
 export type PlanTier = "pro" | "max";
 
 const PAYMENT_PRODUCTS: Record<PlanTier, string> = {
-  pro: "pdt_Y3kYZzaXSo6v7Y0zYhLjb",
-  max: "pdt_PLACEHOLDER_MAX_PRODUCT", // TODO: replace with real Dodo product ID
+  pro: "pdt_0NZ4nZm2ssXq7ZXBkwvcp",
+  max: "pdt_0NZ4noNAkdJ9nIDIO8PJa",
 };
 
 const PLAN_LABELS: Record<PlanTier, string> = {
