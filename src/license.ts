@@ -9,12 +9,9 @@ import { DATA_DIR } from "./config.js";
 const VALIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const OFFLINE_GRACE_HOURS = 72;
 const GRACE_PERIOD_MS = 48 * 60 * 60 * 1000; // 48 hours
-const DODO_CHECKOUT_URL_LIVE = "https://checkout.dodopayments.com";
-const DODO_CHECKOUT_URL_TEST = "https://test.checkout.dodopayments.com";
-const DODO_BASE_URL_LIVE = "https://live.dodopayments.com";
-const DODO_BASE_URL_TEST = "https://test.dodopayments.com";
-const PAYMENT_PRODUCT_LIVE = "pdt_Y3kYZzaXSo6v7Y0zYhLjb";
-const PAYMENT_PRODUCT_TEST = "pdt_0NZ2YnOMRtUJA9x7yFwXS";
+const DODO_CHECKOUT_URL = "https://checkout.dodopayments.com";
+const DODO_BASE_URL = "https://live.dodopayments.com";
+const PAYMENT_PRODUCT = "pdt_Y3kYZzaXSo6v7Y0zYhLjb";
 const SUCCESS_PAGE_URL = "https://whoareyouanas.com/claude-on-phone/success";
 
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
@@ -48,20 +45,13 @@ export interface LicenseCheckResult {
 
 // --- Helpers ---
 
-function getDodoBaseUrl(): string {
-  return process.env.DODO_ENV === "test" ? DODO_BASE_URL_TEST : DODO_BASE_URL_LIVE;
-}
-
 export function getPaymentUrl(): string {
-  const isTest = process.env.DODO_ENV === "test";
-  const base = isTest ? DODO_CHECKOUT_URL_TEST : DODO_CHECKOUT_URL_LIVE;
-  const product = isTest ? PAYMENT_PRODUCT_TEST : PAYMENT_PRODUCT_LIVE;
   const redirect = encodeURIComponent(SUCCESS_PAGE_URL);
-  return `${base}/buy/${product}?quantity=1&redirect_url=${redirect}`;
+  return `${DODO_CHECKOUT_URL}/buy/${PAYMENT_PRODUCT}?quantity=1&redirect_url=${redirect}`;
 }
 
 export function getCustomerPortalUrl(): string {
-  return `${getDodoBaseUrl()}/portal`;
+  return `${DODO_BASE_URL}/portal`;
 }
 
 export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
@@ -180,7 +170,7 @@ export async function activateLicense(
 ): Promise<{ success: boolean; instanceId?: string; error?: string }> {
   const instanceName = generateInstanceName(ownerId);
   try {
-    const res = await fetch(`${getDodoBaseUrl()}/licenses/activate`, {
+    const res = await fetch(`${DODO_BASE_URL}/licenses/activate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ license_key: key, name: instanceName }),
@@ -216,7 +206,7 @@ export async function validateLicense(
 ): Promise<"valid" | "invalid" | "error"> {
   if (!state.licenseKey || !state.instanceId) return "invalid";
   try {
-    const res = await fetch(`${getDodoBaseUrl()}/licenses/validate`, {
+    const res = await fetch(`${DODO_BASE_URL}/licenses/validate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -240,7 +230,7 @@ export async function deactivateLicense(
     return { success: false, error: "No active license to deactivate." };
   }
   try {
-    const res = await fetch(`${getDodoBaseUrl()}/licenses/deactivate`, {
+    const res = await fetch(`${DODO_BASE_URL}/licenses/deactivate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
