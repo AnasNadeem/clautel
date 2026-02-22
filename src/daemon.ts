@@ -80,7 +80,7 @@ async function main() {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(PID_FILE, String(process.pid));
 
-  // License gate — daemon won't start without a valid license or trial
+  // License gate — daemon won't start without a valid license
   const startupCheck = await checkLicenseForStartup();
   if (!startupCheck.allowed) {
     console.error(`License: ${startupCheck.reason}`);

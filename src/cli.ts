@@ -124,39 +124,35 @@ async function cmdSetup(): Promise<void> {
   );
 
   // Step 3/3: License
-  const { getPaymentUrl, activateLicense, defaultLicenseState, saveLicense } = await import("./license.js");
+  const { getPaymentUrl, activateLicense } = await import("./license.js");
 
   console.log("Step 3/3: License");
   console.log(`  Get a license at: ${getPaymentUrl()}`);
-  console.log("  Already have a key? Paste it below.");
-  console.log("  Or press Enter to start a 7-day free trial.\n");
+  console.log("  Paste your license key below.\n");
 
-  const licenseKeyInput = (await ask("  License key (Enter for free trial): ")).trim();
-  rl.close();
-
-  let licenseStatus = "";
-  if (licenseKeyInput) {
-    console.log("\n  Activating license...");
+  while (true) {
+    const licenseKeyInput = (await ask("  License key: ")).trim();
+    if (!licenseKeyInput) {
+      console.log(`  A license key is required. Get one at: ${getPaymentUrl()}\n`);
+      continue;
+    }
+    console.log("  Activating license...");
     const result = await activateLicense(licenseKeyInput, ownerId);
     if (result.success) {
-      licenseStatus = "Active";
       console.log("  License activated successfully!\n");
+      break;
     } else {
       console.log(`  Activation failed: ${result.error}`);
-      console.log("  Starting with free trial instead.\n");
-      saveLicense(defaultLicenseState());
-      licenseStatus = "Free trial (7 days)";
+      console.log("  Check your key and try again.\n");
     }
-  } else {
-    saveLicense(defaultLicenseState());
-    licenseStatus = "Free trial (7 days)";
   }
+  rl.close();
 
   // Completion summary
   console.log("Setup complete!");
   console.log(`  Bot: @${botUsername}`);
   console.log(`  Owner: ${ownerId}`);
-  console.log(`  License: ${licenseStatus}`);
+  console.log("  License: Active");
   console.log("  Run: claude-on-phone start");
 }
 

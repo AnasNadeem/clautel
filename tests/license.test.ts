@@ -23,7 +23,6 @@ const {
   getLicenseInfo,
   invalidateCache,
   flushLicenseSync,
-  TRIAL_DURATION_DAYS,
   getPaymentUrl,
 } = await import("../src/license.js");
 
@@ -47,28 +46,31 @@ describe("license - state I/O", () => {
   beforeEach(() => cleanup());
   afterEach(() => cleanup());
 
-  it("defaultLicenseState returns valid trial state", () => {
+  it("defaultLicenseState returns expired state", () => {
     const state = defaultLicenseState();
-    assert.equal(state.status, "trial");
+    assert.equal(state.status, "expired");
     assert.equal(state.licenseKey, null);
     assert.equal(state.instanceId, null);
-    assert.equal(state.trialStartedAt, null);
     assert.ok(state.checksum, "checksum should be set");
   });
 
   it("loadLicense returns default when no file exists", () => {
     const state = loadLicense();
-    assert.equal(state.status, "trial");
+    assert.equal(state.status, "expired");
   });
 
   it("saveLicense and loadLicense round-trip", () => {
     const state = defaultLicenseState();
-    state.trialStartedAt = new Date().toISOString();
+    state.status = "active";
+    state.licenseKey = "test-key";
+    state.instanceId = "test-instance";
+    state.lastValidatedAt = new Date().toISOString();
     saveLicense(state);
 
     const loaded = loadLicense();
-    assert.equal(loaded.trialStartedAt, state.trialStartedAt);
-    assert.equal(loaded.status, "trial");
+    assert.equal(loaded.licenseKey, "test-key");
+    assert.equal(loaded.lastValidatedAt, state.lastValidatedAt);
+    assert.equal(loaded.status, "active");
   });
 
   it("saveLicense creates file with restricted permissions", () => {
@@ -121,56 +123,7 @@ describe("license - checksum / anti-tamper", () => {
     fs.writeFileSync(LICENSE_FILE, "not valid json{{{");
     invalidateCache();
     const loaded = loadLicense();
-    assert.equal(loaded.status, "trial");
-  });
-});
-
-describe("license - trial", () => {
-  beforeEach(() => cleanup());
-  afterEach(() => cleanup());
-
-  it("first query initializes trialStartedAt", () => {
-    const result = checkLicenseForQuery();
-    assert.equal(result.allowed, true);
-
-    // Flush debounced write so we can read from disk
-    flushLicenseSync();
-    const state = loadLicense();
-    assert.ok(state.trialStartedAt, "trialStartedAt should be set");
-  });
-
-  it("allows queries within trial period", () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date().toISOString();
-    saveLicense(state);
-
-    const result = checkLicenseForQuery();
-    assert.equal(result.allowed, true);
-  });
-
-  it("blocks when trial time expired", () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date(
-      Date.now() - (TRIAL_DURATION_DAYS + 1) * 24 * 60 * 60 * 1000
-    ).toISOString();
-    saveLicense(state);
-
-    const result = checkLicenseForQuery();
-    assert.equal(result.allowed, false);
-    assert.ok(result.reason!.includes("expired"));
-  });
-
-  it("shows time warning when 2 days or less remaining", () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date(
-      Date.now() - (TRIAL_DURATION_DAYS - 1) * 24 * 60 * 60 * 1000
-    ).toISOString();
-    saveLicense(state);
-
-    const result = checkLicenseForQuery();
-    assert.equal(result.allowed, true);
-    assert.ok(result.warning, "should have warning at 1 day remaining");
-    assert.ok(result.warning!.includes("day"));
+    assert.equal(loaded.status, "expired");
   });
 });
 
@@ -244,29 +197,15 @@ describe("license - startup checks", () => {
   beforeEach(() => cleanup());
   afterEach(() => cleanup());
 
-  it("allows trial on startup if within limits", async () => {
-    const result = await checkLicenseForStartup();
-    assert.equal(result.allowed, true);
-  });
-
-  it("blocks expired trial on startup", async () => {
-    const state = defaultLicenseState();
-    state.trialStartedAt = new Date(
-      Date.now() - (TRIAL_DURATION_DAYS + 1) * 24 * 60 * 60 * 1000
-    ).toISOString();
-    saveLicense(state);
-
-    const result = await checkLicenseForStartup();
-    assert.equal(result.allowed, false);
-  });
-
   it("blocks expired license on startup", async () => {
-    const state = defaultLicenseState();
-    state.status = "expired";
-    saveLicense(state);
-
     const result = await checkLicenseForStartup();
     assert.equal(result.allowed, false);
+  });
+
+  it("blocks when no license file exists", async () => {
+    const result = await checkLicenseForStartup();
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason!.includes("expired"));
   });
 });
 
@@ -294,10 +233,10 @@ describe("license - getLicenseInfo", () => {
   beforeEach(() => cleanup());
   afterEach(() => cleanup());
 
-  it("shows trial info for new installation", () => {
+  it("shows expired info for new installation", () => {
     const info = getLicenseInfo();
-    assert.ok(info.includes("trial"));
-    assert.ok(info.includes(`${TRIAL_DURATION_DAYS} days`));
+    assert.ok(info.includes("Expired"));
+    assert.ok(info.includes(getPaymentUrl()));
   });
 
   it("shows active info for active license", () => {

@@ -6,7 +6,6 @@ import { DATA_DIR } from "./config.js";
 
 // --- Constants ---
 
-export const TRIAL_DURATION_DAYS = 7;
 const VALIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const OFFLINE_GRACE_HOURS = 72;
 const GRACE_PERIOD_MS = 48 * 60 * 60 * 1000; // 48 hours
@@ -32,8 +31,7 @@ const INTEGRITY_KEY = Buffer.from([
 export interface LicenseState {
   licenseKey: string | null;
   instanceId: string | null;
-  status: "trial" | "active" | "grace" | "expired";
-  trialStartedAt: string | null;
+  status: "active" | "grace" | "expired";
   lastValidatedAt: string | null;
   lastValidationResult: boolean;
   graceStartedAt: string | null;
@@ -69,7 +67,6 @@ export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
     licenseKey: state.licenseKey,
     instanceId: state.instanceId,
     status: state.status,
-    trialStartedAt: state.trialStartedAt,
     lastValidatedAt: state.lastValidatedAt,
     lastValidationResult: state.lastValidationResult,
     graceStartedAt: state.graceStartedAt,
@@ -89,8 +86,7 @@ export function defaultLicenseState(): LicenseState {
   const state: Omit<LicenseState, "checksum"> = {
     licenseKey: null,
     instanceId: null,
-    status: "trial",
-    trialStartedAt: null,
+    status: "expired",
     lastValidatedAt: null,
     lastValidationResult: false,
     graceStartedAt: null,
@@ -275,19 +271,6 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
   invalidateCache();
   const state = getCachedLicense();
 
-  // Trial — allowed if within time limit
-  if (state.status === "trial") {
-    if (state.trialStartedAt) {
-      const elapsed = Date.now() - new Date(state.trialStartedAt).getTime();
-      if (elapsed > TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000) {
-        state.status = "expired";
-        saveLicense(state);
-        return { allowed: false, reason: "Free trial expired." };
-      }
-    }
-    return { allowed: true };
-  }
-
   // Expired — blocked
   if (state.status === "expired") {
     return { allowed: false, reason: "License expired." };
@@ -370,33 +353,6 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
 export function checkLicenseForQuery(): LicenseCheckResult {
   const state = getCachedLicense();
 
-  if (state.status === "trial") {
-    // Initialize trial on first query
-    if (!state.trialStartedAt) {
-      state.trialStartedAt = new Date().toISOString();
-      markDirty();
-    }
-
-    // Check time limit
-    const elapsed = Date.now() - new Date(state.trialStartedAt).getTime();
-    if (elapsed > TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000) {
-      state.status = "expired";
-      markDirty();
-      return { allowed: false, reason: `Free trial expired.\n\nGet a license: ${getPaymentUrl()}` };
-    }
-
-    const daysRemaining = Math.ceil(
-      (TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000 - elapsed) / (24 * 60 * 60 * 1000)
-    );
-
-    let warning: string | undefined;
-    if (daysRemaining <= 2) {
-      warning = `Free trial: ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""} remaining. Get a license: ${getPaymentUrl()}`;
-    }
-
-    return { allowed: true, warning };
-  }
-
   if (state.status === "active") {
     return { allowed: true };
   }
@@ -458,18 +414,6 @@ export function startPeriodicValidation(): NodeJS.Timeout {
 
 export function getLicenseInfo(): string {
   const state = getCachedLicense();
-
-  if (state.status === "trial") {
-    if (!state.trialStartedAt) {
-      return `Status: Free trial (not started)\nDuration: ${TRIAL_DURATION_DAYS} days`;
-    }
-    const elapsed = Date.now() - new Date(state.trialStartedAt).getTime();
-    const daysRemaining = Math.max(
-      0,
-      Math.ceil((TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000 - elapsed) / (24 * 60 * 60 * 1000))
-    );
-    return `Status: Free trial\nDays remaining: ${daysRemaining}\n\nUpgrade: ${getPaymentUrl()}`;
-  }
 
   if (state.status === "active") {
     const lastValidated = state.lastValidatedAt
