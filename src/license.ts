@@ -42,16 +42,22 @@ const FLUSH_DEBOUNCE_MS = 5000; // 5 seconds
 // Per-installation random integrity key (cached in memory after first read)
 let _integrityKeyCache: Buffer | null = null;
 
+const INTEGRITY_KEY_LENGTH = 64;
+
 function getIntegrityKey(): Buffer {
   if (_integrityKeyCache) return _integrityKeyCache;
   try {
     if (fs.existsSync(INTEGRITY_KEY_FILE)) {
-      _integrityKeyCache = fs.readFileSync(INTEGRITY_KEY_FILE);
-      return _integrityKeyCache;
+      const key = fs.readFileSync(INTEGRITY_KEY_FILE);
+      if (key.length === INTEGRITY_KEY_LENGTH) {
+        _integrityKeyCache = key;
+        return _integrityKeyCache;
+      }
+      // Corrupted/truncated — fall through to regenerate
     }
   } catch {}
   // Generate new per-installation key
-  const newKey = crypto.randomBytes(64);
+  const newKey = crypto.randomBytes(INTEGRITY_KEY_LENGTH);
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(INTEGRITY_KEY_FILE, newKey, { mode: 0o600 });
   _integrityKeyCache = newKey;
@@ -263,6 +269,9 @@ export function invalidateCache(): void {
 // --- Ed25519 Signed Token Verification ---
 
 function hexToBuffer(hex: string): Buffer {
+  if (hex.length !== 64 || !/^[0-9a-f]+$/i.test(hex)) {
+    throw new Error("Invalid hex key: expected 64 hex characters (32 bytes)");
+  }
   return Buffer.from(hex, "hex");
 }
 
@@ -325,9 +334,9 @@ async function validateFromCache(state: LicenseState): Promise<"valid" | "invali
   const valid = await verifySignedToken(cached);
   if (!valid) return "error";
 
-  // Check token age (max 24h offline)
+  // Check token age (max 24h offline, reject future-dated tokens)
   const tokenAgeMs = Date.now() - cached.token.issuedAt * 1000;
-  if (tokenAgeMs > TOKEN_OFFLINE_MAX_MS) return "error";
+  if (tokenAgeMs < 0 || tokenAgeMs > TOKEN_OFFLINE_MAX_MS) return "error";
 
   // Check the token belongs to this license
   if (cached.token.licenseKey !== state.licenseKey) return "error";
@@ -377,12 +386,20 @@ export async function activateLicense(
     if (res.status === 200 || res.status === 201) {
       const data = (await res.json()) as { id: string; token?: SignedToken; signature?: string };
 
+      if (!data.id || typeof data.id !== "string") {
+        return { success: false, error: "Invalid server response: missing instance ID." };
+      }
+
       // If proxy returned a signed token, verify and cache it
       if (useProxy && data.token && data.signature) {
         const signedResponse: SignedResponse = { token: data.token, signature: data.signature };
         const verified = await verifySignedToken(signedResponse);
         if (!verified) {
           return { success: false, error: "Server response signature verification failed." };
+        }
+        // Ensure the signed token matches the response data
+        if (data.token.instanceId !== data.id) {
+          return { success: false, error: "Server response mismatch: token instanceId differs from response." };
         }
         cacheSignedToken(signedResponse);
       }
