@@ -4,6 +4,7 @@ import path from "node:path";
 import { query } from "@anthropic-ai/claude-code";
 import { config } from "./config.js";
 import { logTool, logApproval, logStatus } from "./log.js";
+import { checkLicenseForQuery } from "./license.js";
 
 const COOLDOWN_MS = 2000;
 const THINKING_ROTATE_MS = 2000;
@@ -269,6 +270,9 @@ export class ClaudeBridge {
     prompt: string,
     callbacks: SendCallbacks
   ): Promise<void> {
+    // Secondary anti-bypass license check
+    if (!checkLicenseForQuery().allowed) throw new Error("License required");
+
     const abortController = new AbortController();
     this.activeAborts.set(chatId, abortController);
 

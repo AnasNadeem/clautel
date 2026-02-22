@@ -72,6 +72,7 @@ async function cmdSetup(): Promise<void> {
 
   const token = (await ask("Manager bot token: ")).trim();
   const ownerIdStr = (await ask("Your Telegram user ID: ")).trim();
+  const licenseKeyInput = (await ask("License key (Enter for 7-day free trial): ")).trim();
   rl.close();
 
   if (!token || !/^\d+:[A-Za-z0-9_-]+$/.test(token)) {
@@ -93,6 +94,29 @@ async function cmdSetup(): Promise<void> {
   );
 
   console.log(`\nConfig saved to ${CONFIG_FILE}`);
+
+  // Handle license activation or trial
+  if (licenseKeyInput) {
+    const { activateLicense } = await import("./license.js");
+    console.log("\nActivating license...");
+    const result = await activateLicense(licenseKeyInput, ownerId);
+    if (result.success) {
+      console.log("License activated successfully!");
+    } else {
+      console.error(`License activation failed: ${result.error}`);
+      console.log("You can activate later: claude-on-phone activate <key>");
+      console.log("Starting with 7-day free trial instead.");
+      const { defaultLicenseState: defaultState, saveLicense: saveLic } = await import("./license.js");
+      saveLic(defaultState());
+    }
+  } else {
+    // Initialize trial state
+    const { defaultLicenseState, saveLicense } = await import("./license.js");
+    saveLicense(defaultLicenseState());
+    console.log("\nStarting 7-day free trial (50 queries).");
+    console.log("Activate anytime: claude-on-phone activate <key>");
+  }
+
   console.log("Run: claude-on-phone start");
 }
 
@@ -242,6 +266,61 @@ function cmdUninstallService(): void {
   });
 }
 
+async function cmdActivate(): Promise<void> {
+  const key = process.argv[3];
+  if (!key) {
+    console.error("Usage: claude-on-phone activate <license-key>");
+    process.exit(1);
+  }
+
+  // Load owner ID from config for instance fingerprint
+  let ownerId: number | undefined;
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      ownerId = cfg.TELEGRAM_OWNER_ID;
+    }
+  } catch (err) {
+    console.warn(`Warning: Could not read config file: ${(err as Error).message}`);
+    console.warn("License will be activated without owner ID binding.");
+  }
+
+  const { activateLicense } = await import("./license.js");
+  console.log("Activating license...");
+  const result = await activateLicense(key, ownerId);
+  if (result.success) {
+    console.log("License activated successfully!");
+    console.log("Restart the daemon to apply: claude-on-phone stop && claude-on-phone start");
+  } else {
+    console.error(`Activation failed: ${result.error}`);
+    process.exit(1);
+  }
+}
+
+async function cmdDeactivate(): Promise<void> {
+  const { loadLicense, deactivateLicense } = await import("./license.js");
+  const state = loadLicense();
+
+  if (!state.licenseKey) {
+    console.log("No active license to deactivate.");
+    return;
+  }
+
+  console.log("Deactivating license...");
+  const result = await deactivateLicense(state);
+  if (result.success) {
+    console.log("License deactivated. Activation slot freed.");
+  } else {
+    console.error(`Deactivation failed: ${result.error}`);
+    process.exit(1);
+  }
+}
+
+async function cmdLicense(): Promise<void> {
+  const { getLicenseInfo } = await import("./license.js");
+  console.log(getLicenseInfo());
+}
+
 function cmdHelp(): void {
   console.log(`
 Claude on Phone — Telegram bridge for Claude Code
@@ -254,6 +333,9 @@ Commands:
   stop               Stop the daemon
   status             Show whether the daemon is running
   logs               Tail the daemon logs (Ctrl+C to exit)
+  activate <key>     Activate a license key
+  deactivate         Deactivate this machine's license
+  license            Show current license status
   install-service    Install as a macOS launchd service (auto-restart)
   uninstall-service  Remove the launchd service
   help               Show this help message
@@ -283,6 +365,15 @@ switch (command) {
     break;
   case "logs":
     cmdLogs();
+    break;
+  case "activate":
+    cmdActivate().catch((err) => { console.error(err); process.exit(1); });
+    break;
+  case "deactivate":
+    cmdDeactivate().catch((err) => { console.error(err); process.exit(1); });
+    break;
+  case "license":
+    cmdLicense().catch((err) => { console.error(err); process.exit(1); });
     break;
   case "install-service":
     cmdInstallService();

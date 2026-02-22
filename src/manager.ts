@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { Bot } from "grammy";
 import { config } from "./config.js";
 import type { BotConfig } from "./store.js";
+import { getLicenseInfo, PAYMENT_URL, CUSTOMER_PORTAL_URL } from "./license.js";
 
 export interface ManagerCallbacks {
   startWorker: (botConfig: BotConfig) => Promise<void>;
@@ -72,6 +73,8 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
     "/add — Add a new worker bot (interactive)\n" +
     "/add TOKEN /path/to/repo — Add a worker bot (inline)\n" +
     "/remove @username — Remove a worker bot\n" +
+    "/subscribe — Get a license or upgrade your plan\n" +
+    "/subscription — View license status, billing &amp; cancellation\n" +
     "/cancel — Cancel current operation\n" +
     "/help — Show this help message\n\n" +
     "<b>How to add a bot:</b>\n" +
@@ -95,6 +98,28 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
     await ctx.reply("<b>Active bots:</b>\n" + botList, {
       parse_mode: "HTML",
     });
+  });
+
+  bot.command("subscribe", async (ctx) => {
+    await ctx.reply(
+      "<b>Get claude-on-phone</b>\n\n" +
+        `<a href="${PAYMENT_URL}">Purchase a license</a>\n\n` +
+        "After purchase you'll receive a license key via email.\n" +
+        "Activate it with:\n" +
+        "<code>claude-on-phone activate &lt;key&gt;</code>",
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.command("subscription", async (ctx) => {
+    const info = getLicenseInfo();
+    await ctx.reply(
+      "<b>Subscription</b>\n\n" +
+        `<pre>${info}</pre>\n\n` +
+        "<b>Manage billing</b>\n" +
+        `<a href="${CUSTOMER_PORTAL_URL}">Payment history, invoices &amp; cancellation</a>`,
+      { parse_mode: "HTML" }
+    );
   });
 
   bot.command("cancel", async (ctx) => {

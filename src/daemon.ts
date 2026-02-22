@@ -8,11 +8,14 @@ import { loadBots, addBot, removeBot } from "./store.js";
 import type { BotConfig } from "./store.js";
 import { DATA_DIR } from "./config.js";
 
+import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, PAYMENT_URL } from "./license.js";
+
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 const activeWorkers = new Map<number, { config: BotConfig; bot: Bot; bridge: ClaudeBridge }>();
 let healthCheckTimer: NodeJS.Timeout | null = null;
+let licenseTimer: NodeJS.Timeout | null = null;
 
 const WORKER_COMMANDS = [
   { command: "new",     description: "Start a fresh session" },
@@ -24,11 +27,13 @@ const WORKER_COMMANDS = [
 ];
 
 const MANAGER_COMMANDS = [
-  { command: "bots",   description: "List active worker bots" },
-  { command: "add",    description: "Add a new worker bot" },
-  { command: "remove", description: "Remove a worker bot" },
-  { command: "cancel", description: "Cancel current operation" },
-  { command: "help",   description: "Show help" },
+  { command: "bots",         description: "List active worker bots" },
+  { command: "add",          description: "Add a new worker bot" },
+  { command: "remove",       description: "Remove a worker bot" },
+  { command: "subscribe",    description: "Get a license or upgrade" },
+  { command: "subscription", description: "View license, billing & cancel" },
+  { command: "cancel",       description: "Cancel current operation" },
+  { command: "help",         description: "Show help" },
 ];
 
 async function startWorker(botConfig: BotConfig): Promise<void> {
@@ -74,6 +79,20 @@ async function main() {
   // Write our own PID so the CLI can detect us even if launched via npm start
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(PID_FILE, String(process.pid));
+
+  // License gate — daemon won't start without a valid license or trial
+  const startupCheck = await checkLicenseForStartup();
+  if (!startupCheck.allowed) {
+    console.error(`License: ${startupCheck.reason}`);
+    console.error(`Purchase: ${PAYMENT_URL}`);
+    console.error(`Activate: claude-on-phone activate <key>`);
+    fs.rmSync(PID_FILE, { force: true });
+    process.exit(1);
+  }
+  if (startupCheck.warning) {
+    console.warn(`License warning: ${startupCheck.warning}`);
+  }
+  licenseTimer = startPeriodicValidation();
 
   const managerBot = createManager({ startWorker, stopWorker, getActiveWorkers });
 
@@ -129,12 +148,14 @@ async function main() {
 
 const shutdown = async () => {
   console.log("\nShutting down...");
+  if (licenseTimer) clearInterval(licenseTimer);
   if (healthCheckTimer) clearInterval(healthCheckTimer);
   for (const [, worker] of activeWorkers) {
     worker.bridge.abortAll();
     try { await worker.bot.stop(); } catch {}
   }
   activeWorkers.clear();
+  flushLicenseSync();
   fs.rmSync(PID_FILE, { force: true });
   process.exit(0);
 };
