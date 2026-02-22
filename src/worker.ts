@@ -21,7 +21,7 @@ const FETCH_TIMEOUT_MS = 30_000;
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024; // 20 MB
 const REPLY_PREVIEW_MAX = 500;
 const STREAM_MAX_LEN = 4000;
-const FEEDBACK_FORM_URL = "https://forms.gle/REPLACE_WITH_YOUR_FORM_ID";
+const FEEDBACK_FORM_URL = "https://forms.gle/5r3j1uqK4YP7KWSA9";
 
 export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
   const bot = new Bot(botConfig.token);
