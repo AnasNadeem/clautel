@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { Bot } from "grammy";
 import { config } from "./config.js";
 import type { BotConfig } from "./store.js";
-import { getLicenseInfo, getPaymentUrl, getCustomerPortalUrl } from "./license.js";
+import { getLicenseInfo, getPaymentUrl, getCustomerPortalUrl, detectClaudePlan, getPlanLabel } from "./license.js";
 
 export interface ManagerCallbacks {
   startWorker: (botConfig: BotConfig) => Promise<void>;
@@ -103,9 +103,15 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
   });
 
   bot.command("subscribe", async (ctx) => {
+    const { tier } = detectClaudePlan();
+    const label = getPlanLabel(tier);
+    const url = getPaymentUrl(tier);
+
     await ctx.reply(
       "<b>Get claude-on-phone</b>\n\n" +
-        `<a href="${getPaymentUrl()}">Purchase a license</a>\n\n` +
+        `Detected Claude plan: <b>${tier === "max" ? "Max" : "Pro"}</b>\n` +
+        `Your price: <b>${label}</b>\n\n` +
+        `<a href="${url}">Purchase license</a>\n\n` +
         "After purchase you'll receive a license key via email.\n" +
         "Activate it with:\n" +
         "<code>claude-on-phone activate &lt;key&gt;</code>",

@@ -11,8 +11,19 @@ const OFFLINE_GRACE_HOURS = 72;
 const GRACE_PERIOD_MS = 48 * 60 * 60 * 1000; // 48 hours
 const DODO_CHECKOUT_URL = "https://checkout.dodopayments.com";
 const DODO_BASE_URL = "https://live.dodopayments.com";
-const PAYMENT_PRODUCT = "pdt_Y3kYZzaXSo6v7Y0zYhLjb";
 const SUCCESS_PAGE_URL = "https://whoareyouanas.com/claude-on-phone/success";
+
+export type PlanTier = "pro" | "max";
+
+const PAYMENT_PRODUCTS: Record<PlanTier, string> = {
+  pro: "pdt_Y3kYZzaXSo6v7Y0zYhLjb",
+  max: "pdt_PLACEHOLDER_MAX_PRODUCT", // TODO: replace with real Dodo product ID
+};
+
+const PLAN_LABELS: Record<PlanTier, string> = {
+  pro: "Pro ($4/mo)",
+  max: "Max ($9/mo)",
+};
 
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
 const FLUSH_DEBOUNCE_MS = 5000; // 5 seconds
@@ -30,6 +41,7 @@ export interface LicenseState {
   licenseKey: string | null;
   instanceId: string | null;
   status: "active" | "grace" | "expired";
+  plan: PlanTier;
   lastValidatedAt: string | null;
   lastValidationResult: boolean;
   graceStartedAt: string | null;
@@ -45,9 +57,25 @@ export interface LicenseCheckResult {
 
 // --- Helpers ---
 
-export function getPaymentUrl(): string {
+export function getPaymentUrl(plan: PlanTier = "pro"): string {
+  const product = PAYMENT_PRODUCTS[plan];
   const redirect = encodeURIComponent(SUCCESS_PAGE_URL);
-  return `${DODO_CHECKOUT_URL}/buy/${PAYMENT_PRODUCT}?quantity=1&redirect_url=${redirect}`;
+  return `${DODO_CHECKOUT_URL}/buy/${product}?quantity=1&redirect_url=${redirect}`;
+}
+
+export function getPlanLabel(plan: PlanTier): string {
+  return PLAN_LABELS[plan];
+}
+
+export function detectClaudePlan(): { tier: PlanTier } {
+  const claudeConfigPath = path.join(os.homedir(), ".claude.json");
+  try {
+    if (!fs.existsSync(claudeConfigPath)) return { tier: "pro" };
+    const raw = JSON.parse(fs.readFileSync(claudeConfigPath, "utf-8"));
+    return { tier: raw.hasOpusPlanDefault === true ? "max" : "pro" };
+  } catch {
+    return { tier: "pro" };
+  }
 }
 
 export function getCustomerPortalUrl(): string {
@@ -55,6 +83,20 @@ export function getCustomerPortalUrl(): string {
 }
 
 export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
+  const payload = JSON.stringify({
+    licenseKey: state.licenseKey,
+    instanceId: state.instanceId,
+    status: state.status,
+    plan: state.plan,
+    lastValidatedAt: state.lastValidatedAt,
+    lastValidationResult: state.lastValidationResult,
+    graceStartedAt: state.graceStartedAt,
+    warningsSent: state.warningsSent,
+  });
+  return crypto.createHmac("sha256", INTEGRITY_KEY).update(payload).digest("hex");
+}
+
+function computeLegacyChecksum(state: Omit<LicenseState, "checksum">): string {
   const payload = JSON.stringify({
     licenseKey: state.licenseKey,
     instanceId: state.instanceId,
@@ -79,6 +121,7 @@ export function defaultLicenseState(): LicenseState {
     licenseKey: null,
     instanceId: null,
     status: "expired",
+    plan: "pro",
     lastValidatedAt: null,
     lastValidationResult: false,
     graceStartedAt: null,
@@ -90,19 +133,31 @@ export function defaultLicenseState(): LicenseState {
 export function loadLicense(): LicenseState {
   try {
     if (!fs.existsSync(LICENSE_FILE)) return defaultLicenseState();
-    const raw = JSON.parse(fs.readFileSync(LICENSE_FILE, "utf-8")) as LicenseState;
+    const raw = JSON.parse(fs.readFileSync(LICENSE_FILE, "utf-8"));
 
-    // Verify checksum — tamper detection
-    const { checksum, ...rest } = raw;
+    // Migration: old license files lack `plan` field
+    if (!raw.plan) raw.plan = "pro";
+
+    const { checksum, ...rest } = raw as LicenseState;
+
+    // Try new checksum format (with plan)
     const expected = computeChecksum(rest);
-    if (checksum !== expected) {
-      const expired = defaultLicenseState();
-      expired.status = "expired";
-      saveLicense(expired);
-      return expired;
+    if (checksum === expected) return raw as LicenseState;
+
+    // Try legacy checksum format (without plan) for migration
+    const legacyExpected = computeLegacyChecksum(rest);
+    if (checksum === legacyExpected) {
+      // Valid legacy format — re-save with plan field and new checksum
+      const migrated: LicenseState = { ...rest, checksum: computeChecksum(rest) };
+      saveLicense(migrated);
+      return migrated;
     }
 
-    return raw;
+    // Tampered
+    const expired = defaultLicenseState();
+    expired.status = "expired";
+    saveLicense(expired);
+    return expired;
   } catch {
     return defaultLicenseState();
   }
@@ -166,8 +221,10 @@ export function invalidateCache(): void {
 
 export async function activateLicense(
   key: string,
-  ownerId?: number
+  ownerId?: number,
+  plan?: PlanTier
 ): Promise<{ success: boolean; instanceId?: string; error?: string }> {
+  const detectedPlan = plan ?? detectClaudePlan().tier;
   const instanceName = generateInstanceName(ownerId);
   try {
     const res = await fetch(`${DODO_BASE_URL}/licenses/activate`, {
@@ -182,6 +239,7 @@ export async function activateLicense(
       state.licenseKey = key;
       state.instanceId = data.id;
       state.status = "active";
+      state.plan = detectedPlan;
       state.lastValidatedAt = new Date().toISOString();
       state.lastValidationResult = true;
       state.graceStartedAt = null;
@@ -290,7 +348,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
         saveLicense(state);
         return {
           allowed: true,
-          warning: `Your subscription has lapsed. You have 48 hours to renew.\nRenew: ${getPaymentUrl()}`,
+          warning: `Your subscription has lapsed. You have 48 hours to renew.\nRenew: ${getPaymentUrl(state.plan)}`,
         };
       }
       // Already in grace — check if grace expired
@@ -302,7 +360,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
           return { allowed: false, reason: "Grace period expired. License required." };
         }
       }
-      return { allowed: true, warning: `Subscription lapsed. Renew soon: ${getPaymentUrl()}` };
+      return { allowed: true, warning: `Subscription lapsed. Renew soon: ${getPaymentUrl(state.plan)}` };
     }
 
     // result === "error" — network failure, fall back to cached validation
@@ -357,18 +415,18 @@ export function checkLicenseForQuery(): LicenseCheckResult {
     if (graceElapsed >= GRACE_PERIOD_MS) {
       state.status = "expired";
       markDirty();
-      return { allowed: false, reason: `License expired.\n\nRenew: ${getPaymentUrl()}` };
+      return { allowed: false, reason: `License expired.\n\nRenew: ${getPaymentUrl(state.plan)}` };
     }
 
     const hoursRemaining = Math.ceil((GRACE_PERIOD_MS - graceElapsed) / (60 * 60 * 1000));
     return {
       allowed: true,
-      warning: `Your subscription has lapsed. ${hoursRemaining}h remaining to renew.\nRenew: ${getPaymentUrl()}`,
+      warning: `Your subscription has lapsed. ${hoursRemaining}h remaining to renew.\nRenew: ${getPaymentUrl(state.plan)}`,
     };
   }
 
   // expired
-  return { allowed: false, reason: `License expired.\n\nGet a license: ${getPaymentUrl()}` };
+  return { allowed: false, reason: `License expired.\n\nGet a license: ${getPaymentUrl(state.plan)}` };
 }
 
 // --- Periodic Validation ---
@@ -411,7 +469,7 @@ export function getLicenseInfo(): string {
     const lastValidated = state.lastValidatedAt
       ? new Date(state.lastValidatedAt).toLocaleString()
       : "never";
-    return `Status: Active\nLicense: ${state.licenseKey?.slice(0, 8)}...\nLast validated: ${lastValidated}`;
+    return `Status: Active\nPlan: ${getPlanLabel(state.plan)}\nLicense: ${state.licenseKey?.slice(0, 8)}...\nLast validated: ${lastValidated}`;
   }
 
   if (state.status === "grace") {
@@ -420,7 +478,7 @@ export function getLicenseInfo(): string {
       const elapsed = Date.now() - new Date(state.graceStartedAt).getTime();
       hoursLeft = String(Math.max(0, Math.ceil((GRACE_PERIOD_MS - elapsed) / (60 * 60 * 1000))));
     }
-    return `Status: Grace period (${hoursLeft}h remaining)\nYour subscription has lapsed. Renew to continue.\n\nRenew: ${getPaymentUrl()}`;
+    return `Status: Grace period (${hoursLeft}h remaining)\nPlan: ${getPlanLabel(state.plan)}\nYour subscription has lapsed. Renew to continue.\n\nRenew: ${getPaymentUrl(state.plan)}`;
   }
 
   return `Status: Expired\n\nGet a license: ${getPaymentUrl()}`;

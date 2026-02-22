@@ -8,7 +8,7 @@ import { loadBots, addBot, removeBot } from "./store.js";
 import type { BotConfig } from "./store.js";
 import { DATA_DIR } from "./config.js";
 
-import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl } from "./license.js";
+import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl, detectClaudePlan, getPlanLabel } from "./license.js";
 
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const HEALTH_CHECK_INTERVAL_MS = 60_000; // 1 minute — fast recovery after sleep/network loss
@@ -83,11 +83,15 @@ async function main() {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(PID_FILE, String(process.pid));
 
+  // Detect Claude plan
+  const { tier } = detectClaudePlan();
+  console.log(`Detected Claude plan: ${getPlanLabel(tier)}`);
+
   // License gate — daemon won't start without a valid license
   const startupCheck = await checkLicenseForStartup();
   if (!startupCheck.allowed) {
     console.error(`License: ${startupCheck.reason}`);
-    console.error(`Purchase: ${getPaymentUrl()}`);
+    console.error(`Purchase: ${getPaymentUrl(tier)}`);
     console.error(`Activate: claude-on-phone activate <key>`);
     fs.rmSync(PID_FILE, { force: true });
     process.exit(1);
