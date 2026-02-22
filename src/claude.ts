@@ -269,6 +269,10 @@ export class ClaudeBridge {
     prompt: string,
     callbacks: SendCallbacks
   ): Promise<void> {
+    // Secondary anti-bypass license check
+    const { checkLicenseForQuery } = await import("./license.js");
+    if (!checkLicenseForQuery().allowed) throw new Error("License required");
+
     const abortController = new AbortController();
     this.activeAborts.set(chatId, abortController);
 

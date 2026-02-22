@@ -10,6 +10,7 @@ import {
   formatToolCall,
 } from "./formatter.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
+import { checkLicenseForQuery, PAYMENT_URL } from "./license.js";
 
 const TYPING_INTERVAL_MS = 4000;
 const EDIT_DEBOUNCE_MS = 1500;
@@ -141,6 +142,16 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
 
   function handlePrompt(chatId: number, prompt: string, replyFn: (text: string) => Promise<{ message_id: number }>) {
     (async () => {
+      // License check — gate every query
+      const licenseCheck = checkLicenseForQuery();
+      if (!licenseCheck.allowed) {
+        await bot.api.sendMessage(chatId, `${licenseCheck.reason}\n\nGet a license: ${PAYMENT_URL}`);
+        return;
+      }
+      if (licenseCheck.warning) {
+        await bot.api.sendMessage(chatId, licenseCheck.warning);
+      }
+
       if (bridge.isProcessing(chatId)) {
         await bot.api.sendMessage(chatId, "Already processing a request. Use /cancel to abort.");
         return;

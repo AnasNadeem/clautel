@@ -8,11 +8,14 @@ import { loadBots, addBot, removeBot } from "./store.js";
 import type { BotConfig } from "./store.js";
 import { DATA_DIR } from "./config.js";
 
+import { checkLicenseForStartup, startPeriodicValidation, PAYMENT_URL } from "./license.js";
+
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 const activeWorkers = new Map<number, { config: BotConfig; bot: Bot; bridge: ClaudeBridge }>();
 let healthCheckTimer: NodeJS.Timeout | null = null;
+let licenseTimer: NodeJS.Timeout | null = null;
 
 const WORKER_COMMANDS = [
   { command: "new",     description: "Start a fresh session" },
@@ -75,6 +78,20 @@ async function main() {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(PID_FILE, String(process.pid));
 
+  // License gate — daemon won't start without a valid license or trial
+  const startupCheck = await checkLicenseForStartup();
+  if (!startupCheck.allowed) {
+    console.error(`License: ${startupCheck.reason}`);
+    console.error(`Purchase: ${PAYMENT_URL}`);
+    console.error(`Activate: claude-on-phone activate <key>`);
+    fs.rmSync(PID_FILE, { force: true });
+    process.exit(1);
+  }
+  if (startupCheck.warning) {
+    console.warn(`License warning: ${startupCheck.warning}`);
+  }
+  licenseTimer = startPeriodicValidation();
+
   const managerBot = createManager({ startWorker, stopWorker, getActiveWorkers });
 
   // Exit immediately if another instance is already polling this token
@@ -129,6 +146,7 @@ async function main() {
 
 const shutdown = async () => {
   console.log("\nShutting down...");
+  if (licenseTimer) clearInterval(licenseTimer);
   if (healthCheckTimer) clearInterval(healthCheckTimer);
   for (const [, worker] of activeWorkers) {
     worker.bridge.abortAll();
