@@ -352,17 +352,24 @@ async function cmdActivate(): Promise<void> {
   }
 
   // Parse optional --plan flag
-  const { activateLicense, detectClaudePlan, getPlanLabel } = await import("./license.js");
-  type PlanTier = "pro" | "max";
+  const { activateLicense, detectClaudePlan, getPlanLabel, isUnderLicensed, getPaymentUrl } = await import("./license.js");
 
-  let planArg: PlanTier | undefined;
+  let planArg: "pro" | "max" | undefined;
   const planIdx = process.argv.indexOf("--plan");
   if (planIdx !== -1 && process.argv[planIdx + 1]) {
     const val = process.argv[planIdx + 1];
     if (val === "pro" || val === "max") planArg = val;
   }
 
-  const plan = planArg ?? detectClaudePlan().tier;
+  const { tier: detectedTier } = detectClaudePlan();
+  const plan = planArg ?? detectedTier;
+
+  // Enforce: can't use a plan lower than detected Claude plan
+  if (isUnderLicensed(plan, detectedTier)) {
+    console.error(`Your Claude plan is ${getPlanLabel(detectedTier)} — you cannot use a ${getPlanLabel(plan)} license.`);
+    console.error(`Get a ${getPlanLabel(detectedTier)} license at: ${getPaymentUrl(detectedTier)}`);
+    process.exit(1);
+  }
 
   // Load owner ID from config for instance fingerprint
   let ownerId: number | undefined;

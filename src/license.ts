@@ -25,6 +25,8 @@ const PLAN_LABELS: Record<PlanTier, string> = {
   max: "Max ($9/mo)",
 };
 
+const PLAN_ORDER: Record<PlanTier, number> = { pro: 0, max: 1 };
+
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
 const FLUSH_DEBOUNCE_MS = 5000; // 5 seconds
 
@@ -67,15 +69,38 @@ export function getPlanLabel(plan: PlanTier): string {
   return PLAN_LABELS[plan];
 }
 
+let _claudePlanCache: { tier: PlanTier; timestamp: number } | null = null;
+const PLAN_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 export function detectClaudePlan(): { tier: PlanTier } {
-  const claudeConfigPath = path.join(os.homedir(), ".claude.json");
-  try {
-    if (!fs.existsSync(claudeConfigPath)) return { tier: "pro" };
-    const raw = JSON.parse(fs.readFileSync(claudeConfigPath, "utf-8"));
-    return { tier: raw.hasOpusPlanDefault === true ? "max" : "pro" };
-  } catch {
-    return { tier: "pro" };
+  if (_claudePlanCache && Date.now() - _claudePlanCache.timestamp < PLAN_CACHE_TTL_MS) {
+    return { tier: _claudePlanCache.tier };
   }
+  const claudeConfigPath = path.join(os.homedir(), ".claude.json");
+  let tier: PlanTier = "pro";
+  try {
+    if (fs.existsSync(claudeConfigPath)) {
+      const raw = JSON.parse(fs.readFileSync(claudeConfigPath, "utf-8"));
+      if (raw.hasOpusPlanDefault === true) tier = "max";
+    }
+  } catch {}
+  _claudePlanCache = { tier, timestamp: Date.now() };
+  return { tier };
+}
+
+/** Force re-read on next detectClaudePlan() call. */
+export function invalidatePlanCache(): void {
+  _claudePlanCache = null;
+}
+
+/** True when the user's Claude plan is higher than their license plan (must upgrade). */
+export function isUnderLicensed(licensePlan: PlanTier, claudePlan: PlanTier): boolean {
+  return PLAN_ORDER[claudePlan] > PLAN_ORDER[licensePlan];
+}
+
+/** True when the user's Claude plan is lower than their license plan (auto-downgrade). */
+export function isOverLicensed(licensePlan: PlanTier, claudePlan: PlanTier): boolean {
+  return PLAN_ORDER[claudePlan] < PLAN_ORDER[licensePlan];
 }
 
 export function getCustomerPortalUrl(): string {
@@ -224,7 +249,17 @@ export async function activateLicense(
   ownerId?: number,
   plan?: PlanTier
 ): Promise<{ success: boolean; instanceId?: string; error?: string }> {
-  const detectedPlan = plan ?? detectClaudePlan().tier;
+  const { tier: claudeTier } = detectClaudePlan();
+  const requestedPlan = plan ?? claudeTier;
+
+  // Enforce: can't activate with a plan lower than detected Claude plan
+  if (isUnderLicensed(requestedPlan, claudeTier)) {
+    return {
+      success: false,
+      error: `Your Claude plan is ${getPlanLabel(claudeTier)} — you need a ${getPlanLabel(claudeTier)} license.\nGet one at: ${getPaymentUrl(claudeTier)}`,
+    };
+  }
+
   const instanceName = generateInstanceName(ownerId);
   try {
     const res = await fetch(`${DODO_BASE_URL}/licenses/activate`, {
@@ -239,7 +274,7 @@ export async function activateLicense(
       state.licenseKey = key;
       state.instanceId = data.id;
       state.status = "active";
-      state.plan = detectedPlan;
+      state.plan = requestedPlan;
       state.lastValidatedAt = new Date().toISOString();
       state.lastValidationResult = true;
       state.graceStartedAt = null;
@@ -331,6 +366,18 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
     const result = await validateLicense(state);
 
     if (result === "valid") {
+      // Sync plan with Claude subscription on startup
+      const { tier: claudeTier } = detectClaudePlan();
+      if (isUnderLicensed(state.plan, claudeTier)) {
+        return {
+          allowed: false,
+          reason: `Your Claude plan upgraded to ${getPlanLabel(claudeTier)}. Please upgrade your license.\n\nPurchase: ${getPaymentUrl(claudeTier)}\nActivate: claude-on-phone activate <key>`,
+        };
+      }
+      if (isOverLicensed(state.plan, claudeTier)) {
+        state.plan = claudeTier;
+      }
+
       state.status = "active";
       state.lastValidatedAt = new Date().toISOString();
       state.lastValidationResult = true;
@@ -404,6 +451,20 @@ export function checkLicenseForQuery(): LicenseCheckResult {
   const state = getCachedLicense();
 
   if (state.status === "active") {
+    // Plan enforcement: sync license plan with Claude subscription
+    const { tier: claudeTier } = detectClaudePlan();
+    if (isUnderLicensed(state.plan, claudeTier)) {
+      // User upgraded Claude → must upgrade license
+      return {
+        allowed: false,
+        reason: `Your Claude plan upgraded to ${getPlanLabel(claudeTier)}.\nPlease upgrade your license.\n\n${getPaymentUrl(claudeTier)}`,
+      };
+    }
+    if (isOverLicensed(state.plan, claudeTier)) {
+      // User downgraded Claude → auto-update license plan
+      state.plan = claudeTier;
+      markDirty();
+    }
     return { allowed: true };
   }
 
@@ -444,6 +505,12 @@ export function startPeriodicValidation(): NodeJS.Timeout {
         state.graceStartedAt = null;
         state.warningsSent = 0;
       }
+      // Periodic plan sync: auto-downgrade if user changed Claude plan
+      invalidatePlanCache();
+      const { tier: claudeTier } = detectClaudePlan();
+      if (isOverLicensed(state.plan, claudeTier)) {
+        state.plan = claudeTier;
+      }
       state.lastValidatedAt = new Date().toISOString();
       state.lastValidationResult = true;
       saveLicense(state); // important state change — write immediately
@@ -481,5 +548,5 @@ export function getLicenseInfo(): string {
     return `Status: Grace period (${hoursLeft}h remaining)\nPlan: ${getPlanLabel(state.plan)}\nYour subscription has lapsed. Renew to continue.\n\nRenew: ${getPaymentUrl(state.plan)}`;
   }
 
-  return `Status: Expired\n\nGet a license: ${getPaymentUrl()}`;
+  return `Status: Expired\n\nGet a license: ${getPaymentUrl(detectClaudePlan().tier)}`;
 }
