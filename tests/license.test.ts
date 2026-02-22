@@ -24,7 +24,7 @@ const {
   invalidateCache,
   flushLicenseSync,
   TRIAL_DURATION_DAYS,
-  PAYMENT_URL,
+  getPaymentUrl,
 } = await import("../src/license.js");
 
 const { DATA_DIR } = await import("../src/config.js");
@@ -236,7 +236,7 @@ describe("license - expired status", () => {
 
     const result = checkLicenseForQuery();
     assert.equal(result.allowed, false);
-    assert.ok(result.reason!.includes(PAYMENT_URL));
+    assert.ok(result.reason!.includes(getPaymentUrl()));
   });
 });
 
@@ -320,7 +320,7 @@ describe("license - getLicenseInfo", () => {
 
     const info = getLicenseInfo();
     assert.ok(info.includes("Grace"));
-    assert.ok(info.includes(PAYMENT_URL));
+    assert.ok(info.includes(getPaymentUrl()));
   });
 
   it("shows expired info", () => {
@@ -330,6 +330,6 @@ describe("license - getLicenseInfo", () => {
 
     const info = getLicenseInfo();
     assert.ok(info.includes("Expired"));
-    assert.ok(info.includes(PAYMENT_URL));
+    assert.ok(info.includes(getPaymentUrl()));
   });
 });

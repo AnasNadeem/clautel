@@ -10,10 +10,12 @@ export const TRIAL_DURATION_DAYS = 7;
 const VALIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const OFFLINE_GRACE_HOURS = 72;
 const GRACE_PERIOD_MS = 48 * 60 * 60 * 1000; // 48 hours
-export const PAYMENT_URL = "https://checkout.dodopayments.com/buy/pdt_Y3kYZzaXSo6v7Y0zYhLjb";
-export const CUSTOMER_PORTAL_URL = "https://live.dodopayments.com/portal";
+const DODO_CHECKOUT_URL_LIVE = "https://checkout.dodopayments.com";
+const DODO_CHECKOUT_URL_TEST = "https://test.checkout.dodopayments.com";
 const DODO_BASE_URL_LIVE = "https://live.dodopayments.com";
 const DODO_BASE_URL_TEST = "https://test.dodopayments.com";
+const PAYMENT_PRODUCT_LIVE = "pdt_Y3kYZzaXSo6v7Y0zYhLjb";
+const PAYMENT_PRODUCT_TEST = "pdt_0NZ2YnOMRtUJA9x7yFwXS";
 
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
 const FLUSH_DEBOUNCE_MS = 5000; // 5 seconds
@@ -49,6 +51,17 @@ export interface LicenseCheckResult {
 
 function getDodoBaseUrl(): string {
   return process.env.DODO_ENV === "test" ? DODO_BASE_URL_TEST : DODO_BASE_URL_LIVE;
+}
+
+export function getPaymentUrl(): string {
+  const isTest = process.env.DODO_ENV === "test";
+  const base = isTest ? DODO_CHECKOUT_URL_TEST : DODO_CHECKOUT_URL_LIVE;
+  const product = isTest ? PAYMENT_PRODUCT_TEST : PAYMENT_PRODUCT_LIVE;
+  return `${base}/buy/${product}?quantity=1`;
+}
+
+export function getCustomerPortalUrl(): string {
+  return `${getDodoBaseUrl()}/portal`;
 }
 
 export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
@@ -302,7 +315,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
         saveLicense(state);
         return {
           allowed: true,
-          warning: `Your subscription has lapsed. You have 48 hours to renew.\nRenew: ${PAYMENT_URL}`,
+          warning: `Your subscription has lapsed. You have 48 hours to renew.\nRenew: ${getPaymentUrl()}`,
         };
       }
       // Already in grace — check if grace expired
@@ -314,7 +327,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
           return { allowed: false, reason: "Grace period expired. License required." };
         }
       }
-      return { allowed: true, warning: `Subscription lapsed. Renew soon: ${PAYMENT_URL}` };
+      return { allowed: true, warning: `Subscription lapsed. Renew soon: ${getPaymentUrl()}` };
     }
 
     // result === "error" — network failure, fall back to cached validation
@@ -369,7 +382,7 @@ export function checkLicenseForQuery(): LicenseCheckResult {
     if (elapsed > TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000) {
       state.status = "expired";
       markDirty();
-      return { allowed: false, reason: `Free trial expired.\n\nGet a license: ${PAYMENT_URL}` };
+      return { allowed: false, reason: `Free trial expired.\n\nGet a license: ${getPaymentUrl()}` };
     }
 
     const daysRemaining = Math.ceil(
@@ -378,7 +391,7 @@ export function checkLicenseForQuery(): LicenseCheckResult {
 
     let warning: string | undefined;
     if (daysRemaining <= 2) {
-      warning = `Free trial: ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""} remaining. Get a license: ${PAYMENT_URL}`;
+      warning = `Free trial: ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""} remaining. Get a license: ${getPaymentUrl()}`;
     }
 
     return { allowed: true, warning };
@@ -396,18 +409,18 @@ export function checkLicenseForQuery(): LicenseCheckResult {
     if (graceElapsed >= GRACE_PERIOD_MS) {
       state.status = "expired";
       markDirty();
-      return { allowed: false, reason: `License expired.\n\nRenew: ${PAYMENT_URL}` };
+      return { allowed: false, reason: `License expired.\n\nRenew: ${getPaymentUrl()}` };
     }
 
     const hoursRemaining = Math.ceil((GRACE_PERIOD_MS - graceElapsed) / (60 * 60 * 1000));
     return {
       allowed: true,
-      warning: `Your subscription has lapsed. ${hoursRemaining}h remaining to renew.\nRenew: ${PAYMENT_URL}`,
+      warning: `Your subscription has lapsed. ${hoursRemaining}h remaining to renew.\nRenew: ${getPaymentUrl()}`,
     };
   }
 
   // expired
-  return { allowed: false, reason: `License expired.\n\nGet a license: ${PAYMENT_URL}` };
+  return { allowed: false, reason: `License expired.\n\nGet a license: ${getPaymentUrl()}` };
 }
 
 // --- Periodic Validation ---
@@ -455,7 +468,7 @@ export function getLicenseInfo(): string {
       0,
       Math.ceil((TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000 - elapsed) / (24 * 60 * 60 * 1000))
     );
-    return `Status: Free trial\nDays remaining: ${daysRemaining}\n\nUpgrade: ${PAYMENT_URL}`;
+    return `Status: Free trial\nDays remaining: ${daysRemaining}\n\nUpgrade: ${getPaymentUrl()}`;
   }
 
   if (state.status === "active") {
@@ -471,8 +484,8 @@ export function getLicenseInfo(): string {
       const elapsed = Date.now() - new Date(state.graceStartedAt).getTime();
       hoursLeft = String(Math.max(0, Math.ceil((GRACE_PERIOD_MS - elapsed) / (60 * 60 * 1000))));
     }
-    return `Status: Grace period (${hoursLeft}h remaining)\nYour subscription has lapsed. Renew to continue.\n\nRenew: ${PAYMENT_URL}`;
+    return `Status: Grace period (${hoursLeft}h remaining)\nYour subscription has lapsed. Renew to continue.\n\nRenew: ${getPaymentUrl()}`;
   }
 
-  return `Status: Expired\n\nGet a license: ${PAYMENT_URL}`;
+  return `Status: Expired\n\nGet a license: ${getPaymentUrl()}`;
 }

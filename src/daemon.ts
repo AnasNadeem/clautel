@@ -8,7 +8,7 @@ import { loadBots, addBot, removeBot } from "./store.js";
 import type { BotConfig } from "./store.js";
 import { DATA_DIR } from "./config.js";
 
-import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, PAYMENT_URL } from "./license.js";
+import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl } from "./license.js";
 
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -84,7 +84,7 @@ async function main() {
   const startupCheck = await checkLicenseForStartup();
   if (!startupCheck.allowed) {
     console.error(`License: ${startupCheck.reason}`);
-    console.error(`Purchase: ${PAYMENT_URL}`);
+    console.error(`Purchase: ${getPaymentUrl()}`);
     console.error(`Activate: claude-on-phone activate <key>`);
     fs.rmSync(PID_FILE, { force: true });
     process.exit(1);

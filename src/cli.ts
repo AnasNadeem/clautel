@@ -124,10 +124,10 @@ async function cmdSetup(): Promise<void> {
   );
 
   // Step 3/3: License
-  const { PAYMENT_URL, activateLicense, defaultLicenseState, saveLicense } = await import("./license.js");
+  const { getPaymentUrl, activateLicense, defaultLicenseState, saveLicense } = await import("./license.js");
 
   console.log("Step 3/3: License");
-  console.log(`  Get a license at: ${PAYMENT_URL}`);
+  console.log(`  Get a license at: ${getPaymentUrl()}`);
   console.log("  Already have a key? Paste it below.");
   console.log("  Or press Enter to start a 7-day free trial.\n");
 

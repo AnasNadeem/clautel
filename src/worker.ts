@@ -10,7 +10,7 @@ import {
   formatToolCall,
 } from "./formatter.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
-import { checkLicenseForQuery, PAYMENT_URL } from "./license.js";
+import { checkLicenseForQuery, getPaymentUrl } from "./license.js";
 
 const TYPING_INTERVAL_MS = 4000;
 const EDIT_DEBOUNCE_MS = 1500;
@@ -145,7 +145,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
       // License check — gate every query
       const licenseCheck = checkLicenseForQuery();
       if (!licenseCheck.allowed) {
-        await bot.api.sendMessage(chatId, `${licenseCheck.reason}\n\nGet a license: ${PAYMENT_URL}`);
+        await bot.api.sendMessage(chatId, `${licenseCheck.reason}\n\nGet a license: ${getPaymentUrl()}`);
         return;
       }
       if (licenseCheck.warning) {

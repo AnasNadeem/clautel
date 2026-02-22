@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { Bot } from "grammy";
 import { config } from "./config.js";
 import type { BotConfig } from "./store.js";
-import { getLicenseInfo, PAYMENT_URL, CUSTOMER_PORTAL_URL } from "./license.js";
+import { getLicenseInfo, getPaymentUrl, getCustomerPortalUrl } from "./license.js";
 
 export interface ManagerCallbacks {
   startWorker: (botConfig: BotConfig) => Promise<void>;
@@ -103,7 +103,7 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
   bot.command("subscribe", async (ctx) => {
     await ctx.reply(
       "<b>Get claude-on-phone</b>\n\n" +
-        `<a href="${PAYMENT_URL}">Purchase a license</a>\n\n` +
+        `<a href="${getPaymentUrl()}">Purchase a license</a>\n\n` +
         "After purchase you'll receive a license key via email.\n" +
         "Activate it with:\n" +
         "<code>claude-on-phone activate &lt;key&gt;</code>",
@@ -117,7 +117,7 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
       "<b>Subscription</b>\n\n" +
         `<pre>${info}</pre>\n\n` +
         "<b>Manage billing</b>\n" +
-        `<a href="${CUSTOMER_PORTAL_URL}">Payment history, invoices &amp; cancellation</a>`,
+        `<a href="${getCustomerPortalUrl()}">Payment history, invoices &amp; cancellation</a>`,
       { parse_mode: "HTML" }
     );
   });
