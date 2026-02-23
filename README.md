@@ -10,12 +10,6 @@ Run one lightweight process on your dev machine. It connects to Telegram via lon
 npm install -g clautel
 ```
 
-Or via curl:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AnasNadeem/clautel/main/install.sh | sh
-```
-
 ## Setup
 
 **1. Create a manager bot** — go to [@BotFather](https://t.me/botfather) → `/newbot` → copy the token.
@@ -70,59 +64,6 @@ clautel license            # show current license status
 clautel install-service    # install as macOS launchd service
 clautel uninstall-service  # remove the launchd service
 ```
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Your Machine                                            │
-│                                                          │
-│  ┌─────────┐    ┌─────────────┐    ┌──────────────────┐ │
-│  │ Manager │    │ Worker Bot  │    │ Worker Bot       │ │
-│  │   Bot   │    │ (project A) │    │ (project B)      │ │
-│  └────┬────┘    └──────┬──────┘    └────────┬─────────┘ │
-│       │               │                    │           │
-│       └───────┬───────┴────────────────────┘           │
-│               │                                         │
-│        ┌──────┴──────┐                                  │
-│        │   Daemon    │                                  │
-│        │ (daemon.ts) │                                  │
-│        └──────┬──────┘                                  │
-│               │                                         │
-│        ┌──────┴──────┐    ┌──────────────────┐         │
-│        │ Claude Code │    │   License Gate   │         │
-│        │  (claude.ts)│    │  (license.ts)    │         │
-│        └─────────────┘    └────────┬─────────┘         │
-└────────────────────────────────────┼────────────────────┘
-                                     │
-                          ┌──────────┴──────────┐
-                          │  License Proxy      │
-                          │  license.clautel.com │
-                          └──────────┬──────────┘
-                                     │
-                          ┌──────────┴──────────┐
-                          │  DodoPayments API   │
-                          └─────────────────────┘
-```
-
-## Security
-
-License validation uses a layered defense:
-
-**Client-side:**
-- Per-installation random HMAC key (`~/.clautel/.integrity-key`) — prevents license.json forgery across machines
-- Cross-module integrity canaries — daemon, worker, and claude modules verify the license module hasn't been patched at load time
-- Runtime function hash verification — daemon periodically checks that `checkLicenseForQuery` hasn't been hot-patched
-- Three-gate license checks — startup gate (daemon.ts), per-query gate (worker.ts), and secondary gate (claude.ts)
-- Strict response validation — HTTP 200 responses are verified to contain expected fields, preventing empty-response bypass
-
-**Server-side (Cloudflare Worker proxy at `license.clautel.com`):**
-- Client never talks to the payment API directly — all validation goes through the proxy
-- Proxy returns Ed25519-signed tokens — the client can verify signatures (public key embedded) but cannot forge them (private key stays on Cloudflare)
-- Signed tokens have 1-hour expiry with 24-hour offline cache
-- Cryptographic verification on every validation and activation
-
-See [PAYMENT.md](PAYMENT.md) for full licensing details.
 
 ## Requirements
 

@@ -21,14 +21,11 @@
     "keygen": "node scripts/keygen.mjs",
     "proxy:dev": "cd proxy && npx wrangler dev",
     "proxy:deploy": "cd proxy && npx wrangler deploy",
-    "prepublishOnly": "npm run build"
+    "obfuscate": "node scripts/obfuscate.mjs",
+    "prepublishOnly": "npm run build && npm run obfuscate"
   },
   "author": "Anas Nadeem",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/AnasNadeem/clautel.git"
-  },
   "homepage": "https://clautel.com",
   "keywords": [
     "clautel",
@@ -46,6 +43,7 @@
   },
   "devDependencies": {
     "@types/node": "^22",
+    "javascript-obfuscator": "^5.3.0",
     "tsx": "^4",
     "typescript": "^5"
   }
