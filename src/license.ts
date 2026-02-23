@@ -6,12 +6,18 @@ import { DATA_DIR } from "./config.js";
 
 // --- Constants ---
 
-const VALIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
-const OFFLINE_GRACE_HOURS = 72;
-const GRACE_PERIOD_MS = 48 * 60 * 60 * 1000; // 48 hours
+const VALIDATION_INTERVAL_MS = 1 * 60 * 60 * 1000; // 1 hour
+const OFFLINE_GRACE_HOURS = 24;
+const GRACE_PERIOD_MS = 1 * 60 * 60 * 1000; // 1 hour
 const DODO_CHECKOUT_URL = "https://checkout.dodopayments.com";
 const DODO_BASE_URL = "https://live.dodopayments.com";
-const SUCCESS_PAGE_URL = "https://whoareyouanas.com/claude-on-phone/success";
+const SUCCESS_PAGE_URL = "https://clautel.com/success";
+
+// --- Server-Side Proxy (Ed25519 Signed Tokens) ---
+const PROXY_BASE_URL = "https://license.clautel.com";
+const ED25519_PUBLIC_KEY_HEX = "69f4a24c0a6746e9d9db0d074d7f218da76776ffc2589195e1d23f70a3beceba";
+const SIGNED_TOKEN_FILE = path.join(DATA_DIR, "signed-token.json");
+const TOKEN_OFFLINE_MAX_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export type PlanTier = "pro" | "max";
 
@@ -28,16 +34,52 @@ const PLAN_LABELS: Record<PlanTier, string> = {
 const PLAN_ORDER: Record<PlanTier, number> = { pro: 0, max: 1 };
 
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
+const INTEGRITY_KEY_FILE = path.join(DATA_DIR, ".integrity-key");
 const FLUSH_DEBOUNCE_MS = 5000; // 5 seconds
 
-// Anti-tamper: embedded as byte array so it's not a readable string in source/dist
-const INTEGRITY_KEY = Buffer.from([
-  0x63, 0x6c, 0x61, 0x75, 0x64, 0x65, 0x2d, 0x6f, 0x6e, 0x2d, 0x70, 0x68,
-  0x6f, 0x6e, 0x65, 0x2d, 0x69, 0x6e, 0x74, 0x65, 0x67, 0x72, 0x69, 0x74,
-  0x79, 0x2d, 0x6b, 0x65, 0x79, 0x2d, 0x76, 0x31,
-]);
+// Per-installation random integrity key (cached in memory after first read)
+let _integrityKeyCache: Buffer | null = null;
+
+const INTEGRITY_KEY_LENGTH = 64;
+
+function getIntegrityKey(): Buffer {
+  if (_integrityKeyCache) return _integrityKeyCache;
+  try {
+    if (fs.existsSync(INTEGRITY_KEY_FILE)) {
+      const key = fs.readFileSync(INTEGRITY_KEY_FILE);
+      if (key.length === INTEGRITY_KEY_LENGTH) {
+        _integrityKeyCache = key;
+        return _integrityKeyCache;
+      }
+      // Corrupted/truncated — fall through to regenerate
+    }
+  } catch {}
+  // Generate new per-installation key
+  const newKey = crypto.randomBytes(INTEGRITY_KEY_LENGTH);
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(INTEGRITY_KEY_FILE, newKey, { mode: 0o600 });
+  _integrityKeyCache = newKey;
+  return newKey;
+}
+
+// --- Canary ---
+// Cross-module integrity check: other modules verify this value at load/startup
+export const LICENSE_CANARY = "L1c3ns3-Ch3ck-V2";
 
 // --- Types ---
+
+interface SignedToken {
+  licenseKey: string;
+  instanceId: string;
+  status: "active" | "invalid";
+  issuedAt: number;
+  expiresAt: number;
+}
+
+interface SignedResponse {
+  token: SignedToken;
+  signature: string;
+}
 
 export interface LicenseState {
   licenseKey: string | null;
@@ -49,6 +91,7 @@ export interface LicenseState {
   graceStartedAt: string | null;
   warningsSent: number;
   checksum: string;
+  formatVersion?: number; // undefined = v1 legacy, 2 = server-signed
 }
 
 export interface LicenseCheckResult {
@@ -117,21 +160,9 @@ export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
     lastValidationResult: state.lastValidationResult,
     graceStartedAt: state.graceStartedAt,
     warningsSent: state.warningsSent,
+    formatVersion: state.formatVersion,
   });
-  return crypto.createHmac("sha256", INTEGRITY_KEY).update(payload).digest("hex");
-}
-
-function computeLegacyChecksum(state: Omit<LicenseState, "checksum">): string {
-  const payload = JSON.stringify({
-    licenseKey: state.licenseKey,
-    instanceId: state.instanceId,
-    status: state.status,
-    lastValidatedAt: state.lastValidatedAt,
-    lastValidationResult: state.lastValidationResult,
-    graceStartedAt: state.graceStartedAt,
-    warningsSent: state.warningsSent,
-  });
-  return crypto.createHmac("sha256", INTEGRITY_KEY).update(payload).digest("hex");
+  return crypto.createHmac("sha256", getIntegrityKey()).update(payload).digest("hex");
 }
 
 export function generateInstanceName(ownerId?: number): string {
@@ -151,6 +182,7 @@ export function defaultLicenseState(): LicenseState {
     lastValidationResult: false,
     graceStartedAt: null,
     warningsSent: 0,
+    formatVersion: undefined,
   };
   return { ...state, checksum: computeChecksum(state) };
 }
@@ -165,20 +197,10 @@ export function loadLicense(): LicenseState {
 
     const { checksum, ...rest } = raw as LicenseState;
 
-    // Try new checksum format (with plan)
     const expected = computeChecksum(rest);
     if (checksum === expected) return raw as LicenseState;
 
-    // Try legacy checksum format (without plan) for migration
-    const legacyExpected = computeLegacyChecksum(rest);
-    if (checksum === legacyExpected) {
-      // Valid legacy format — re-save with plan field and new checksum
-      const migrated: LicenseState = { ...rest, checksum: computeChecksum(rest) };
-      saveLicense(migrated);
-      return migrated;
-    }
-
-    // Tampered
+    // Checksum mismatch — tampered or corrupted
     const expired = defaultLicenseState();
     expired.status = "expired";
     saveLicense(expired);
@@ -242,6 +264,88 @@ export function invalidateCache(): void {
   _cache = null;
 }
 
+// --- Ed25519 Signed Token Verification ---
+
+function hexToBuffer(hex: string): Buffer {
+  if (hex.length !== 64 || !/^[0-9a-f]+$/i.test(hex)) {
+    throw new Error("Invalid hex key: expected 64 hex characters (32 bytes)");
+  }
+  return Buffer.from(hex, "hex");
+}
+
+async function verifySignedToken(response: SignedResponse): Promise<boolean> {
+  try {
+    const pubKeyDer = Buffer.concat([
+      // Ed25519 SPKI prefix (12 bytes)
+      Buffer.from([
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65,
+        0x70, 0x03, 0x21, 0x00,
+      ]),
+      hexToBuffer(ED25519_PUBLIC_KEY_HEX),
+    ]);
+    const publicKey = crypto.createPublicKey({
+      key: pubKeyDer,
+      format: "der",
+      type: "spki",
+    });
+    const data = Buffer.from(JSON.stringify(response.token));
+    const signature = Buffer.from(response.signature, "base64");
+    return crypto.verify(null, data, publicKey, signature);
+  } catch {
+    return false;
+  }
+}
+
+function cacheSignedToken(response: SignedResponse): void {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      SIGNED_TOKEN_FILE,
+      JSON.stringify(response, null, 2),
+      { mode: 0o600 }
+    );
+  } catch {}
+}
+
+function loadCachedSignedToken(): SignedResponse | null {
+  try {
+    if (!fs.existsSync(SIGNED_TOKEN_FILE)) return null;
+    return JSON.parse(fs.readFileSync(SIGNED_TOKEN_FILE, "utf-8")) as SignedResponse;
+  } catch {
+    return null;
+  }
+}
+
+function clearSignedTokenCache(): void {
+  try {
+    if (fs.existsSync(SIGNED_TOKEN_FILE)) {
+      fs.unlinkSync(SIGNED_TOKEN_FILE);
+    }
+  } catch {}
+}
+
+async function validateFromCache(state: LicenseState): Promise<"valid" | "invalid" | "error"> {
+  const cached = loadCachedSignedToken();
+  if (!cached) return "error";
+
+  // Re-verify the cryptographic signature
+  const valid = await verifySignedToken(cached);
+  if (!valid) return "error";
+
+  // Check token age (max 24h offline, reject future-dated tokens)
+  const tokenAgeMs = Date.now() - cached.token.issuedAt * 1000;
+  if (tokenAgeMs < 0 || tokenAgeMs > TOKEN_OFFLINE_MAX_MS) return "error";
+
+  // Check the token belongs to this license
+  if (cached.token.licenseKey !== state.licenseKey) return "error";
+
+  return cached.token.status === "active" ? "valid" : "invalid";
+}
+
+function isProxyConfigured(): boolean {
+  return PROXY_BASE_URL.length > 0 && ED25519_PUBLIC_KEY_HEX.length === 64;
+}
+
 // --- Dodo API ---
 
 export async function activateLicense(
@@ -262,14 +366,39 @@ export async function activateLicense(
 
   const instanceName = generateInstanceName(ownerId);
   try {
-    const res = await fetch(`${DODO_BASE_URL}/licenses/activate`, {
+    // Use proxy if configured, otherwise fall back to direct Dodo (transition period)
+    const useProxy = isProxyConfigured();
+    const url = useProxy
+      ? `${PROXY_BASE_URL}/activate`
+      : `${DODO_BASE_URL}/licenses/activate`;
+
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ license_key: key, name: instanceName }),
     });
 
     if (res.status === 200 || res.status === 201) {
-      const data = (await res.json()) as { id: string };
+      const data = (await res.json()) as { id: string; token?: SignedToken; signature?: string };
+
+      if (!data.id || typeof data.id !== "string") {
+        return { success: false, error: "Invalid server response: missing instance ID." };
+      }
+
+      // If proxy returned a signed token, verify and cache it
+      if (useProxy && data.token && data.signature) {
+        const signedResponse: SignedResponse = { token: data.token, signature: data.signature };
+        const verified = await verifySignedToken(signedResponse);
+        if (!verified) {
+          return { success: false, error: "Server response signature verification failed." };
+        }
+        // Ensure the signed token matches the response data
+        if (data.token.instanceId !== data.id) {
+          return { success: false, error: "Server response mismatch: token instanceId differs from response." };
+        }
+        cacheSignedToken(signedResponse);
+      }
+
       const state = loadLicense();
       state.licenseKey = key;
       state.instanceId = data.id;
@@ -279,6 +408,7 @@ export async function activateLicense(
       state.lastValidationResult = true;
       state.graceStartedAt = null;
       state.warningsSent = 0;
+      state.formatVersion = useProxy ? 2 : state.formatVersion;
       saveLicense(state); // immediate disk write
       invalidateCache();
       return { success: true, instanceId: data.id };
@@ -298,7 +428,47 @@ export async function validateLicense(
   state: LicenseState
 ): Promise<"valid" | "invalid" | "error"> {
   if (!state.licenseKey || !state.instanceId) return "invalid";
+
+  const useProxy = isProxyConfigured();
+
   try {
+    if (useProxy) {
+      // Proxy path: Ed25519-signed responses
+      const res = await fetch(`${PROXY_BASE_URL}/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          license_key: state.licenseKey,
+          license_key_instance_id: state.instanceId,
+        }),
+      });
+
+      let body: SignedResponse;
+      try {
+        body = (await res.json()) as SignedResponse;
+      } catch {
+        return "error";
+      }
+
+      if (!body.token || !body.signature) return "error";
+
+      // Verify Ed25519 signature
+      const verified = await verifySignedToken(body);
+      if (!verified) return "error";
+
+      // Check token is not expired
+      if (body.token.expiresAt <= Math.floor(Date.now() / 1000)) return "error";
+
+      // Check token belongs to this license
+      if (body.token.licenseKey !== state.licenseKey) return "error";
+
+      // Cache the signed token for offline fallback
+      cacheSignedToken(body);
+
+      return body.token.status === "active" ? "valid" : "invalid";
+    }
+
+    // Direct Dodo path (fallback during transition)
     const res = await fetch(`${DODO_BASE_URL}/licenses/validate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -308,11 +478,24 @@ export async function validateLicense(
       }),
     });
 
-    if (res.status === 200) return "valid";
+    if (res.status === 200) {
+      // Strict body validation — reject empty 200 from local proxies
+      try {
+        const body = (await res.json()) as Record<string, unknown>;
+        if (!body.id || typeof body.id !== "string") return "error";
+      } catch {
+        return "error";
+      }
+      return "valid";
+    }
     if (res.status === 404 || res.status === 403 || res.status === 422) return "invalid";
     return "error";
   } catch {
-    return "error"; // Network failure — no state change
+    // Network failure — try offline cache if proxy is configured
+    if (useProxy) {
+      return validateFromCache(state);
+    }
+    return "error";
   }
 }
 
@@ -323,7 +506,12 @@ export async function deactivateLicense(
     return { success: false, error: "No active license to deactivate." };
   }
   try {
-    const res = await fetch(`${DODO_BASE_URL}/licenses/deactivate`, {
+    // Use proxy if configured, otherwise direct Dodo
+    const url = isProxyConfigured()
+      ? `${PROXY_BASE_URL}/deactivate`
+      : `${DODO_BASE_URL}/licenses/deactivate`;
+
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -337,8 +525,10 @@ export async function deactivateLicense(
       state.instanceId = null;
       state.status = "expired";
       state.lastValidationResult = false;
+      state.formatVersion = undefined;
       saveLicense(state); // immediate disk write
       invalidateCache();
+      clearSignedTokenCache();
       return { success: true };
     }
 
@@ -395,7 +585,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
         saveLicense(state);
         return {
           allowed: true,
-          warning: `Your subscription has lapsed. You have 48 hours to renew.\nRenew: ${getPaymentUrl(state.plan)}`,
+          warning: `Your subscription has lapsed. You have 1 hour to renew.\nRenew: ${getPaymentUrl(state.plan)}`,
         };
       }
       // Already in grace — check if grace expired
@@ -406,6 +596,11 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
           saveLicense(state);
           return { allowed: false, reason: "Grace period expired. License required." };
         }
+      } else {
+        // No grace start time — cannot be in grace, expire immediately
+        state.status = "expired";
+        saveLicense(state);
+        return { allowed: false, reason: "Grace period invalid. License required." };
       }
       return { allowed: true, warning: `Subscription lapsed. Renew soon: ${getPaymentUrl(state.plan)}` };
     }
@@ -423,7 +618,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
         saveLicense(state);
         return {
           allowed: true,
-          warning: `Offline too long. Please reconnect within 48 hours.`,
+          warning: `Offline too long. Please reconnect within 1 hour.`,
         };
       }
       // Already in grace
@@ -434,6 +629,11 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
           saveLicense(state);
           return { allowed: false, reason: "Grace period expired. License required." };
         }
+      } else {
+        // No grace start time — cannot be in grace, expire immediately
+        state.status = "expired";
+        saveLicense(state);
+        return { allowed: false, reason: "Grace period invalid. License required." };
       }
       return { allowed: true };
     }
@@ -470,12 +670,17 @@ export function checkLicenseForQuery(): LicenseCheckResult {
 
   if (state.status === "grace") {
     if (!state.graceStartedAt) {
-      return { allowed: true };
+      // No grace start time — cannot be in grace, expire immediately
+      state.status = "expired";
+      saveLicense(state);
+      invalidateCache();
+      return { allowed: false, reason: `License expired.\n\nRenew: ${getPaymentUrl(state.plan)}` };
     }
     const graceElapsed = Date.now() - new Date(state.graceStartedAt).getTime();
     if (graceElapsed >= GRACE_PERIOD_MS) {
       state.status = "expired";
-      markDirty();
+      saveLicense(state);
+      invalidateCache();
       return { allowed: false, reason: `License expired.\n\nRenew: ${getPaymentUrl(state.plan)}` };
     }
 
