@@ -11,6 +11,7 @@ const OFFLINE_GRACE_HOURS = 24;
 const GRACE_PERIOD_MS = 1 * 60 * 60 * 1000; // 1 hour
 const DODO_CHECKOUT_URL = "https://checkout.dodopayments.com";
 const DODO_BASE_URL = "https://live.dodopayments.com";
+const DODO_CUSTOMER_URL = "https://customer.dodopayments.com";
 const SUCCESS_PAGE_URL = "https://clautel.com/success";
 
 // --- Server-Side Proxy (Ed25519 Signed Tokens) ---
@@ -182,7 +183,7 @@ export function isOverLicensed(licensePlan: PlanTier, claudePlan: PlanTier): boo
 }
 
 export function getCustomerPortalUrl(): string {
-  return `${DODO_BASE_URL}/portal`;
+  return `${DODO_BASE_URL}`;
 }
 
 export function computeChecksum(state: Omit<LicenseState, "checksum">): string {
