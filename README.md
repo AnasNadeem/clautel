@@ -1,4 +1,4 @@
-# claude-on-phone
+# Clautel
 
 Use [Claude Code](https://github.com/anthropics/claude-code) from your phone via Telegram.
 
@@ -7,13 +7,13 @@ Run one lightweight process on your dev machine. It connects to Telegram via lon
 ## Install
 
 ```bash
-npm install -g claude-on-phone
+npm install -g clautel
 ```
 
 Or via curl:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AnasNadeem/claude-on-phone/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/AnasNadeem/clautel/main/install.sh | sh
 ```
 
 ## Setup
@@ -25,8 +25,8 @@ curl -fsSL https://raw.githubusercontent.com/AnasNadeem/claude-on-phone/main/ins
 **3. Configure and start:**
 
 ```bash
-claude-on-phone setup
-claude-on-phone start
+clautel setup
+clautel start
 ```
 
 ## Usage
@@ -59,16 +59,16 @@ Then DM each worker bot directly to use Claude Code:
 ## CLI
 
 ```bash
-claude-on-phone setup              # configure token, user ID, and license
-claude-on-phone start              # start daemon in background
-claude-on-phone stop               # stop daemon
-claude-on-phone status             # check if running
-claude-on-phone logs               # tail logs (Ctrl+C to exit)
-claude-on-phone activate <key>     # activate a license key
-claude-on-phone deactivate         # free this machine's activation slot
-claude-on-phone license            # show current license status
-claude-on-phone install-service    # install as macOS launchd service
-claude-on-phone uninstall-service  # remove the launchd service
+clautel setup              # configure token, user ID, and license
+clautel start              # start daemon in background
+clautel stop               # stop daemon
+clautel status             # check if running
+clautel logs               # tail logs (Ctrl+C to exit)
+clautel activate <key>     # activate a license key
+clautel deactivate         # free this machine's activation slot
+clautel license            # show current license status
+clautel install-service    # install as macOS launchd service
+clautel uninstall-service  # remove the launchd service
 ```
 
 ## Architecture
@@ -97,7 +97,7 @@ claude-on-phone uninstall-service  # remove the launchd service
                                      │
                           ┌──────────┴──────────┐
                           │  License Proxy      │
-                          │  (Cloudflare Worker) │
+                          │  license.clautel.com │
                           └──────────┬──────────┘
                                      │
                           ┌──────────┴──────────┐
@@ -110,13 +110,13 @@ claude-on-phone uninstall-service  # remove the launchd service
 License validation uses a layered defense:
 
 **Client-side:**
-- Per-installation random HMAC key (`~/.claude-on-phone/.integrity-key`) — prevents license.json forgery across machines
+- Per-installation random HMAC key (`~/.clautel/.integrity-key`) — prevents license.json forgery across machines
 - Cross-module integrity canaries — daemon, worker, and claude modules verify the license module hasn't been patched at load time
 - Runtime function hash verification — daemon periodically checks that `checkLicenseForQuery` hasn't been hot-patched
 - Three-gate license checks — startup gate (daemon.ts), per-query gate (worker.ts), and secondary gate (claude.ts)
 - Strict response validation — HTTP 200 responses are verified to contain expected fields, preventing empty-response bypass
 
-**Server-side (Cloudflare Worker proxy):**
+**Server-side (Cloudflare Worker proxy at `license.clautel.com`):**
 - Client never talks to the payment API directly — all validation goes through the proxy
 - Proxy returns Ed25519-signed tokens — the client can verify signatures (public key embedded) but cannot forge them (private key stays on Cloudflare)
 - Signed tokens have 1-hour expiry with 24-hour offline cache

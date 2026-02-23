@@ -8,9 +8,9 @@ Before publishing, fully test the polling flow:
 npm run build
 npm link                       # install globally from local folder
 
-claude-on-phone setup          # enter bot token + your Telegram user ID
-claude-on-phone start          # start daemon in background
-claude-on-phone logs           # watch it boot up
+clautel setup          # enter bot token + your Telegram user ID
+clautel start          # start daemon in background
+clautel logs           # watch it boot up
 
 # In Telegram:
 # - DM your manager bot
@@ -19,18 +19,18 @@ claude-on-phone logs           # watch it boot up
 # - Test /model, /cost, /session, /cancel
 # - Send a photo and a document
 
-claude-on-phone stop
-npm unlink -g claude-on-phone  # clean up when done
+clautel stop
+npm unlink -g clautel  # clean up when done
 ```
 
 ## 2. Check npm Package Name Availability
 
 ```bash
-npm view claude-on-phone
+npm view clautel
 ```
 
 - If it returns a 404 → name is free, proceed
-- If it's taken → use a scoped name instead: change `"name"` in `package.json` to `"@AnasNadeem/claude-on-phone"` and update the install instructions in README.md and install.sh
+- If it's taken → use a scoped name instead: change `"name"` in `package.json` to `"@anasnadeem/clautel"` and update the install instructions in README.md and install.sh
 
 ## 3. Merge to Main
 
@@ -52,9 +52,9 @@ npm publish     # prepublishOnly will auto-run build first
 After this, users can install via:
 
 ```bash
-npm install -g claude-on-phone
+npm install -g clautel
 # or
-curl -fsSL https://raw.githubusercontent.com/AnasNadeem/claude-on-phone/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/AnasNadeem/clautel/main/install.sh | sh
 ```
 
 ## 5. Future Updates

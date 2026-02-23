@@ -6,14 +6,14 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const DATA_DIR = path.join(os.homedir(), ".claude-on-phone");
+const DATA_DIR = path.join(os.homedir(), ".clautel");
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const LOG_FILE = path.join(DATA_DIR, "app.log");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const LOG_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 const LOG_KEEP_COUNT = 3; // keep app.log.1, app.log.2, app.log.3
 
-const LAUNCHD_LABEL = "com.claude-on-phone.daemon";
+const LAUNCHD_LABEL = "com.clautel.daemon";
 
 // Resolve daemon path: prefer compiled dist/daemon.js, fall back to tsx for local dev
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,7 +65,7 @@ async function cmdSetup(): Promise<void> {
   const ask = (q: string): Promise<string> =>
     new Promise((resolve) => rl.question(q, resolve));
 
-  console.log("Claude on Phone — Setup\n");
+  console.log("Clautel — Setup\n");
 
   // Step 1/3: Bot token with live validation
   console.log("Step 1/3: Manager Bot");
@@ -164,7 +164,7 @@ async function cmdSetup(): Promise<void> {
     console.log("\nInstalling auto-start service...");
     await cmdInstallService();
   } else {
-    console.log("  Run: claude-on-phone start");
+    console.log("  Run: clautel start");
   }
 }
 
@@ -176,7 +176,7 @@ async function cmdStart(): Promise<void> {
   }
 
   if (!fs.existsSync(CONFIG_FILE)) {
-    console.error("Not configured. Run: claude-on-phone setup");
+    console.error("Not configured. Run: clautel setup");
     process.exit(1);
   }
 
@@ -203,7 +203,7 @@ async function cmdStart(): Promise<void> {
   fs.writeFileSync(PID_FILE, String(child.pid));
 
   console.log(`Started (PID ${child.pid})`);
-  console.log(`Logs: claude-on-phone logs`);
+  console.log(`Logs: clautel logs`);
 }
 
 function cmdStop(): void {
@@ -254,7 +254,7 @@ async function cmdInstallService(): Promise<void> {
   }
 
   if (!fs.existsSync(CONFIG_FILE)) {
-    console.error("Not configured. Run: claude-on-phone setup");
+    console.error("Not configured. Run: clautel setup");
     process.exit(1);
   }
 
@@ -347,7 +347,7 @@ function cmdUninstallService(): void {
 async function cmdActivate(): Promise<void> {
   const key = process.argv[3];
   if (!key) {
-    console.error("Usage: claude-on-phone activate <license-key> [--plan pro|max]");
+    console.error("Usage: clautel activate <license-key> [--plan pro|max]");
     process.exit(1);
   }
 
@@ -388,7 +388,7 @@ async function cmdActivate(): Promise<void> {
   const result = await activateLicense(key, ownerId, plan);
   if (result.success) {
     console.log("License activated successfully!");
-    console.log("Restart the daemon to apply: claude-on-phone stop && claude-on-phone start");
+    console.log("Restart the daemon to apply: clautel stop && clautel start");
   } else {
     console.error(`Activation failed: ${result.error}`);
     process.exit(1);
@@ -421,9 +421,9 @@ async function cmdLicense(): Promise<void> {
 
 function cmdHelp(): void {
   console.log(`
-Claude on Phone — Telegram bridge for Claude Code
+Clautel — Telegram bridge for Claude Code
 
-Usage: claude-on-phone <command>
+Usage: clautel <command>
 
 Commands:
   setup              Configure your bot token and Telegram user ID
@@ -439,8 +439,8 @@ Commands:
   help               Show this help message
 
 Getting started:
-  1. claude-on-phone setup
-  2. claude-on-phone start
+  1. clautel setup
+  2. clautel start
   3. DM your manager bot on Telegram
   4. Use /add to attach a bot to a project directory
 `);

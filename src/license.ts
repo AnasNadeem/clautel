@@ -561,7 +561,7 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
       if (isUnderLicensed(state.plan, claudeTier)) {
         return {
           allowed: false,
-          reason: `Your Claude plan upgraded to ${getPlanLabel(claudeTier)}. Please upgrade your license.\n\nPurchase: ${getPaymentUrl(claudeTier)}\nActivate: claude-on-phone activate <key>`,
+          reason: `Your Claude plan upgraded to ${getPlanLabel(claudeTier)}. Please upgrade your license.\n\nPurchase: ${getPaymentUrl(claudeTier)}\nActivate: clautel activate <key>`,
         };
       }
       if (isOverLicensed(state.plan, claudeTier)) {

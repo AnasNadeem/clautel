@@ -3,4 +3,4 @@ dist/
 .env
 *.log
 .tmp-images/
-.claude-on-phone-state.json
+.clautel-state.json

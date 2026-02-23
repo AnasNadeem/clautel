@@ -1,18 +1,18 @@
 # Payment & Licensing
 
-claude-on-phone uses [DodoPayments](https://dodopayments.com) for license key management. License validation goes through a Cloudflare Worker proxy that signs responses with Ed25519 — the client can verify but not forge tokens.
+Clautel uses [DodoPayments](https://dodopayments.com) for license key management. License validation goes through a Cloudflare Worker proxy at `license.clautel.com` that signs responses with Ed25519 — the client can verify but not forge tokens.
 
 ## How It Works
 
 ```
 User discovers checkout via:
-  • claude-on-phone setup (terminal prompt)
+  • clautel setup (terminal prompt)
   • /subscribe command in manager bot
   • License expired messages in Telegram
         ↓
 Purchase on Dodo checkout page → license key delivered via email
         ↓
-claude-on-phone activate <key> → proxy forwards to Dodo, returns signed token
+clautel activate <key> → proxy forwards to Dodo, returns signed token
         ↓
 Daemon validates on startup + every 1 hour via proxy
 Every query checks license state locally (in-memory cache)
@@ -24,7 +24,7 @@ Manage billing/cancel via:
 ## Validation Flow
 
 ```
-Client                          Proxy (Cloudflare Worker)      DodoPayments
+Client                          Proxy (license.clautel.com)    DodoPayments
   │                                  │                            │
   │── POST /validate {key, id} ────→ │                            │
   │                                  │── POST /licenses/validate →│
@@ -47,7 +47,7 @@ Client                          Proxy (Cloudflare Worker)      DodoPayments
 | Pro | $4/mo | Claude Pro users (Sonnet default) |
 | Max | $9/mo | Claude Max users (Opus default) |
 
-Plan detection is automatic — claude-on-phone reads `~/.claude.json` to detect whether you're on Claude Pro or Max. If you upgrade your Claude plan, you'll be prompted to upgrade your license.
+Plan detection is automatic — Clautel reads `~/.claude.json` to detect whether you're on Claude Pro or Max. If you upgrade your Claude plan, you'll be prompted to upgrade your license.
 
 ## Setup (Dodo Dashboard)
 
@@ -76,12 +76,12 @@ The Ed25519 public key and proxy URL (`https://license.clautel.com`) are already
 ## CLI Commands
 
 ```bash
-claude-on-phone activate <key>     # Activate a license key on this machine
-claude-on-phone deactivate         # Free this machine's activation slot
-claude-on-phone license            # Show current license status
+clautel activate <key>     # Activate a license key on this machine
+clautel deactivate         # Free this machine's activation slot
+clautel license            # Show current license status
 ```
 
-During `claude-on-phone setup`, users are prompted for a license key.
+During `clautel setup`, users are prompted for a license key.
 
 ## Manager Bot Commands
 
@@ -114,7 +114,7 @@ active ──(subscription lapses)──→ grace (1h) ──→ expired
 
 | Layer | Description |
 |-------|-------------|
-| Per-installation HMAC key | Random 64-byte key generated on first run at `~/.claude-on-phone/.integrity-key` (mode `0600`). Each machine has a unique key — forging a checksum requires the key file from that specific installation. |
+| Per-installation HMAC key | Random 64-byte key generated on first run at `~/.clautel/.integrity-key` (mode `0600`). Each machine has a unique key — forging a checksum requires the key file from that specific installation. |
 | Integrity canaries | `license.ts` exports `LICENSE_CANARY`. `daemon.ts`, `worker.ts`, and `claude.ts` verify it at module load. Patching `dist/license.js` to skip checks without also patching all three consumers causes an integrity failure. |
 | Function hash verification | `daemon.ts` computes SHA-256 of `checkLicenseForQuery.toString()` at startup. The health check (every 60s) recomputes and compares. Hot-patching the function at runtime is detected. |
 | Three-gate validation | Startup gate in `daemon.ts` (async, remote), per-query gate in `worker.ts` (sync, in-memory), secondary gate in `claude.ts` (sync, backup). All three must pass. |
@@ -143,9 +143,9 @@ active ──(subscription lapses)──→ grace (1h) ──→ expired
 | `proxy/src/worker.ts` | Cloudflare Worker: forwards to Dodo, signs responses with Ed25519 |
 | `proxy/wrangler.toml` | Worker configuration |
 | `scripts/keygen.mjs` | One-time Ed25519 keypair generator |
-| `~/.claude-on-phone/license.json` | Runtime license state (mode `0600`) |
-| `~/.claude-on-phone/.integrity-key` | Per-installation HMAC key (mode `0600`) |
-| `~/.claude-on-phone/signed-token.json` | Cached Ed25519 signed token for offline fallback (mode `0600`) |
+| `~/.clautel/license.json` | Runtime license state (mode `0600`) |
+| `~/.clautel/.integrity-key` | Per-installation HMAC key (mode `0600`) |
+| `~/.clautel/signed-token.json` | Cached Ed25519 signed token for offline fallback (mode `0600`) |
 | `tests/license.test.ts` | License module test cases |
 
 ## Testing

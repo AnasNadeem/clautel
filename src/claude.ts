@@ -263,7 +263,7 @@ export class ClaudeBridge {
   }
 
   getTempDir(): string {
-    return path.join(os.tmpdir(), `claude-on-phone-${this.botId}`);
+    return path.join(os.tmpdir(), `clautel-${this.botId}`);
   }
 
   cleanupTempFiles(): void {

@@ -108,13 +108,13 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
     const url = getPaymentUrl(tier);
 
     await ctx.reply(
-      "<b>Get claude-on-phone</b>\n\n" +
+      "<b>Get clautel</b>\n\n" +
         `Detected Claude plan: <b>${tier === "max" ? "Max" : "Pro"}</b>\n` +
         `Your price: <b>${label}</b>\n\n` +
         `<a href="${url}">Purchase license</a>\n\n` +
         "After purchase you'll receive a license key via email.\n" +
         "Activate it with:\n" +
-        "<code>claude-on-phone activate &lt;key&gt;</code>",
+        "<code>clautel activate &lt;key&gt;</code>",
       { parse_mode: "HTML" }
     );
   });

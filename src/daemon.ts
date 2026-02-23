@@ -102,7 +102,7 @@ async function main() {
   if (!startupCheck.allowed) {
     console.error(`License: ${startupCheck.reason}`);
     console.error(`Purchase: ${getPaymentUrl(tier)}`);
-    console.error(`Activate: claude-on-phone activate <key>`);
+    console.error(`Activate: clautel activate <key>`);
     fs.rmSync(PID_FILE, { force: true });
     process.exit(1);
   }
@@ -116,7 +116,7 @@ async function main() {
   // Exit immediately if another instance is already polling this token
   managerBot.catch((err) => {
     if (err.message.includes("409: Conflict")) {
-      console.error("Another daemon is already running. Stop it first: claude-on-phone stop");
+      console.error("Another daemon is already running. Stop it first: clautel stop");
       process.exit(1);
     }
     console.error("[manager] Error:", err.message);
