@@ -183,7 +183,17 @@ export function isOverLicensed(licensePlan: PlanTier, claudePlan: PlanTier): boo
 }
 
 export function getCustomerPortalUrl(): string {
-  return `${DODO_BASE_URL}`;
+  return `${DODO_CUSTOMER_URL}`;
+}
+
+const BOT_LIMITS: Record<PlanTier, number> = { pro: 5, max: Infinity };
+
+export function getBotLimit(plan: PlanTier): number {
+  return BOT_LIMITS[plan];
+}
+
+export function getLicensePlan(): PlanTier {
+  return getCachedLicense().plan;
 }
 
 export function computeChecksum(state: Omit<LicenseState, "checksum">): string {

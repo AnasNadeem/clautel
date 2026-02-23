@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { Bot } from "grammy";
 import { config } from "./config.js";
 import type { BotConfig } from "./store.js";
-import { getLicenseInfo, getPaymentUrl, getCustomerPortalUrl, detectClaudePlan, getPlanLabel } from "./license.js";
+import { getLicenseInfo, getPaymentUrl, getCustomerPortalUrl, detectClaudePlan, getPlanLabel, getLicensePlan, getBotLimit } from "./license.js";
 
 export interface ManagerCallbacks {
   startWorker: (botConfig: BotConfig) => Promise<void>;
@@ -97,21 +97,25 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
 
   bot.command("bots", async (ctx) => {
     const botList = formatBotList();
-    await ctx.reply("<b>Active bots:</b>\n" + botList, {
+    const plan = getLicensePlan();
+    const limit = getBotLimit(plan);
+    const count = callbacks.getActiveWorkers().size;
+    const header = limit === Infinity
+      ? `<b>Active bots (${count}):</b>`
+      : `<b>Active bots (${count}/${limit}):</b>`;
+    await ctx.reply(header + "\n" + botList, {
       parse_mode: "HTML",
     });
   });
 
   bot.command("subscribe", async (ctx) => {
-    const { tier } = detectClaudePlan();
-    const label = getPlanLabel(tier);
-    const url = getPaymentUrl(tier);
-
     await ctx.reply(
       "<b>Get clautel</b>\n\n" +
-        `Detected Claude plan: <b>${tier === "max" ? "Max" : "Pro"}</b>\n` +
-        `Your price: <b>${label}</b>\n\n` +
-        `<a href="${url}">Purchase license</a>\n\n` +
+        "<b>Pro</b> — $4/mo\n" +
+        "• Up to 5 project bots\n\n" +
+        "<b>Max</b> — $9/mo\n" +
+        "• Unlimited project bots\n\n" +
+        `<a href="${getPaymentUrl("pro")}">Get Pro</a>  |  <a href="${getPaymentUrl("max")}">Get Max</a>\n\n` +
         "After purchase you'll receive a license key via email.\n" +
         "Activate it with:\n" +
         "<code>clautel activate &lt;key&gt;</code>",
@@ -225,6 +229,21 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
       await ctx.reply(`Path is not a directory: <code>${dir}</code>`, {
         parse_mode: "HTML",
       });
+      return;
+    }
+
+    // Enforce per-plan bot limit
+    const plan = getLicensePlan();
+    const limit = getBotLimit(plan);
+    const currentCount = callbacks.getActiveWorkers().size;
+    if (currentCount >= limit) {
+      await ctx.reply(
+        `You've reached the bot limit for your plan (<b>${limit} bots</b>).\n\n` +
+          `Upgrade to <b>Max</b> for unlimited bots.\n\n` +
+          `<a href="${getPaymentUrl("max")}">Upgrade to Max ($9/mo)</a>`,
+        { parse_mode: "HTML" }
+      );
+      clearConversation(ctx.chat.id);
       return;
     }
 

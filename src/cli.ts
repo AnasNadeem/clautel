@@ -124,23 +124,26 @@ async function cmdSetup(): Promise<void> {
   );
 
   // Step 3/3: License
-  const { getPaymentUrl, activateLicense, detectClaudePlan, getPlanLabel, saveClaudePlan } = await import("./license.js");
+  const { getPaymentUrl, activateLicense, getPlanLabel, saveClaudePlan } = await import("./license.js");
 
-  const autoDetected = detectClaudePlan().tier;
+  console.log("Step 3/3: License\n");
+  console.log("  Choose your plan:\n");
+  console.log("    [1] Pro — $4/mo");
+  console.log("        Up to 5 project bots\n");
+  console.log("    [2] Max — $9/mo (Recommended)");
+  console.log("        Unlimited project bots\n");
 
-  console.log("Step 3/3: License");
-  console.log(`  Auto-detected Claude plan: ${autoDetected === "max" ? "Max (Opus default)" : "Pro (Sonnet default)"}`);
-
-  let tier = autoDetected;
-  const confirmPlan = (await ask(`  Is this correct? [Y/n]: `)).trim().toLowerCase();
-  if (confirmPlan === "n" || confirmPlan === "no") {
-    tier = autoDetected === "max" ? "pro" : "max";
-    console.log(`  Switched to: ${tier === "max" ? "Max (Opus default)" : "Pro (Sonnet default)"}`);
+  let tier: "pro" | "max" = "max";
+  while (true) {
+    const choice = (await ask("  Select plan (1 or 2): ")).trim();
+    if (choice === "1") { tier = "pro"; break; }
+    if (choice === "2" || choice === "") { tier = "max"; break; }
+    console.log("  Please enter 1 or 2.\n");
   }
   saveClaudePlan(tier);
 
   const planLabel = getPlanLabel(tier);
-  console.log(`  Your price: ${planLabel}`);
+  console.log(`\n  Selected: ${planLabel}`);
   console.log(`  Get a license at: ${getPaymentUrl(tier)}`);
   console.log("  Paste your license key below.\n");
 
