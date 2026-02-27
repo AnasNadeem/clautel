@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, InputFile } from "grammy";
 import { config } from "./config.js";
 import { ClaudeBridge, AVAILABLE_MODELS } from "./claude.js";
 import type { BotConfig } from "./store.js";
+import { BrowserManager } from "./browser.js";
+import type { BrowserActionResult } from "./browser.js";
 import {
   claudeToTelegram,
   splitMessage,
@@ -28,7 +30,7 @@ const REPLY_PREVIEW_MAX = 500;
 const STREAM_MAX_LEN = 4000;
 const FEEDBACK_FORM_URL = "https://forms.gle/5r3j1uqK4YP7KWSA9";
 
-export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
+export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, browserManager: BrowserManager): Bot {
   const bot = new Bot(botConfig.token);
   const tag = botConfig.username;
 
@@ -78,6 +80,13 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     "/cancel — Abort the current operation\n" +
     "/feedback — Send feedback or report an issue\n" +
     "/help — Show this help message\n\n" +
+    "<b>Browser Preview:</b>\n" +
+    "/preview &lt;url&gt; — Open URL in browser\n" +
+    "/browser — Show current page with controls\n" +
+    "/click &lt;x&gt; &lt;y&gt; — Click at coordinates\n" +
+    "/scroll &lt;up|down&gt; [amount] — Scroll the page\n" +
+    "/type &lt;text&gt; — Type into focused element\n" +
+    "/navigate &lt;url&gt; — Go to a new URL\n\n" +
     "<b>Features:</b>\n" +
     "• Send documents (PDF, code files, etc.) for analysis\n" +
     "• Reply to any Claude message to include it as context\n" +
@@ -169,6 +178,161 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     );
   });
 
+  // --- Browser helpers ---
+
+  function browserKeyboard(chatId: number): InlineKeyboard {
+    return new InlineKeyboard()
+      .text("↑ Scroll Up",   `browser:scroll:${chatId}:up:300`)
+      .text("↓ Scroll Down", `browser:scroll:${chatId}:down:300`)
+      .row()
+      .text("← Back",        `browser:back:${chatId}`)
+      .text("⟳ Refresh",     `browser:refresh:${chatId}`)
+      .text("→ Forward",     `browser:forward:${chatId}`)
+      .row()
+      .text("✕ Close",       `browser:close:${chatId}`);
+  }
+
+  function browserCaption(result: BrowserActionResult): string {
+    const title = result.title.length > 50 ? result.title.slice(0, 47) + "..." : result.title;
+    const url = result.url.length > 80 ? result.url.slice(0, 77) + "..." : result.url;
+    return `${title}\n${url}`;
+  }
+
+  async function sendOrUpdateScreenshot(chatId: number, result: BrowserActionResult): Promise<void> {
+    const keyboard = browserKeyboard(chatId);
+    const caption = browserCaption(result);
+    const existing = browserManager.getScreenshotMessage(chatId);
+    if (existing) {
+      try {
+        await bot.api.editMessageMedia(chatId, existing.messageId, {
+          type: "photo",
+          media: new InputFile(result.screenshotBuffer, "screenshot.png"),
+          caption,
+        }, { reply_markup: keyboard });
+        return;
+      } catch {
+        browserManager.clearScreenshotMessage(chatId);
+      }
+    }
+    const msg = await bot.api.sendPhoto(chatId, new InputFile(result.screenshotBuffer, "screenshot.png"), {
+      caption,
+      reply_markup: keyboard,
+    });
+    browserManager.setScreenshotMessage(chatId, { messageId: msg.message_id, chatId });
+  }
+
+  // --- Browser commands ---
+
+  bot.command("preview", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const url = ctx.match?.trim();
+    if (!url) {
+      await ctx.reply("Usage: /preview <url>\nExample: /preview http://localhost:3000");
+      return;
+    }
+    try {
+      await ctx.reply("Opening browser...");
+      const result = await browserManager.openPage(chatId, url);
+      await sendOrUpdateScreenshot(chatId, result);
+    } catch (err) {
+      await ctx.reply(`Browser error: ${(err as Error).message}`);
+    }
+  });
+
+  bot.command("click", async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!browserManager.hasPage(chatId)) {
+      await ctx.reply("No browser open. Use /preview <url> to start one.");
+      return;
+    }
+    const parts = ctx.match?.trim().split(/\s+/);
+    const x = Number(parts?.[0]);
+    const y = Number(parts?.[1]);
+    if (!parts || parts.length < 2 || isNaN(x) || isNaN(y)) {
+      await ctx.reply("Usage: /click <x> <y>\nExample: /click 640 400");
+      return;
+    }
+    try {
+      const result = await browserManager.click(chatId, x, y);
+      await sendOrUpdateScreenshot(chatId, result);
+    } catch (err) {
+      await ctx.reply(`Browser error: ${(err as Error).message}`);
+    }
+  });
+
+  bot.command("scroll", async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!browserManager.hasPage(chatId)) {
+      await ctx.reply("No browser open. Use /preview <url> to start one.");
+      return;
+    }
+    const parts = ctx.match?.trim().split(/\s+/);
+    const direction = parts?.[0] as "up" | "down";
+    if (!direction || (direction !== "up" && direction !== "down")) {
+      await ctx.reply("Usage: /scroll <up|down> [amount]\nExample: /scroll down 300");
+      return;
+    }
+    const amount = Number(parts?.[1] ?? 300);
+    try {
+      const result = await browserManager.scroll(chatId, direction, isNaN(amount) ? 300 : amount);
+      await sendOrUpdateScreenshot(chatId, result);
+    } catch (err) {
+      await ctx.reply(`Browser error: ${(err as Error).message}`);
+    }
+  });
+
+  bot.command("navigate", async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!browserManager.hasPage(chatId)) {
+      await ctx.reply("No browser open. Use /preview <url> to start one.");
+      return;
+    }
+    const url = ctx.match?.trim();
+    if (!url) {
+      await ctx.reply("Usage: /navigate <url>\nExample: /navigate http://localhost:3000/about");
+      return;
+    }
+    try {
+      const result = await browserManager.navigate(chatId, url);
+      await sendOrUpdateScreenshot(chatId, result);
+    } catch (err) {
+      await ctx.reply(`Browser error: ${(err as Error).message}`);
+    }
+  });
+
+  bot.command("type", async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!browserManager.hasPage(chatId)) {
+      await ctx.reply("No browser open. Use /preview <url> to start one.");
+      return;
+    }
+    const text = ctx.match;
+    if (!text) {
+      await ctx.reply("Usage: /type <text>\nExample: /type hello world");
+      return;
+    }
+    try {
+      const result = await browserManager.typeText(chatId, text);
+      await sendOrUpdateScreenshot(chatId, result);
+    } catch (err) {
+      await ctx.reply(`Browser error: ${(err as Error).message}`);
+    }
+  });
+
+  bot.command("browser", async (ctx) => {
+    const chatId = ctx.chat.id;
+    if (!browserManager.hasPage(chatId)) {
+      await ctx.reply("No browser open. Use /preview <url> to start one.");
+      return;
+    }
+    try {
+      const result = await browserManager.takeScreenshot(chatId);
+      await sendOrUpdateScreenshot(chatId, result);
+    } catch (err) {
+      await ctx.reply(`Browser error: ${(err as Error).message}`);
+    }
+  });
+
   function handlePrompt(chatId: number, prompt: string, replyFn: (text: string) => Promise<{ message_id: number }>) {
     (async () => {
       // License check — gate every query
@@ -183,7 +347,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
       }
 
       if (bridge.isProcessing(chatId)) {
-        await bot.api.sendMessage(chatId, "Already processing a request. Use /cancel to abort.");
+        await bot.api.sendMessage(chatId, "Claude is busy with a running task. Use /cancel to stop it first.");
         return;
       }
 
@@ -611,9 +775,44 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     handlePrompt(chatId, prompt, (text) => ctx.reply(text));
   });
 
-  // Callback query handler for Approve/Deny, model selection, retry
+  // Callback query handler for Approve/Deny, model selection, retry, browser
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
+
+    // Browser controls
+    if (data.startsWith("browser:")) {
+      const parts = data.split(":");
+      const action = parts[1];
+      const chatId = Number(parts[2]);
+      await ctx.answerCallbackQuery().catch(() => {});
+      if (!browserManager.hasPage(chatId)) {
+        await bot.api.sendMessage(chatId, "Browser was closed. Use /preview <url> to open a new one.");
+        return;
+      }
+      try {
+        let result: BrowserActionResult;
+        if (action === "scroll") {
+          result = await browserManager.scroll(chatId, parts[3] as "up" | "down", Number(parts[4] ?? 300));
+        } else if (action === "back") {
+          result = await browserManager.goBack(chatId);
+        } else if (action === "forward") {
+          result = await browserManager.goForward(chatId);
+        } else if (action === "refresh") {
+          result = await browserManager.refresh(chatId);
+        } else if (action === "close") {
+          await browserManager.closePage(chatId);
+          const caption = bridge.isProcessing(chatId)
+            ? "Browser closed.\n\nClaude is still running a task. Use /cancel to stop it before sending a new message."
+            : "Browser closed.";
+          await bot.api.editMessageCaption(chatId, ctx.callbackQuery.message!.message_id, { caption }).catch(() => {});
+          return;
+        } else { return; }
+        await sendOrUpdateScreenshot(chatId, result);
+      } catch (err) {
+        await bot.api.sendMessage(chatId, `Browser error: ${(err as Error).message}`);
+      }
+      return;
+    }
 
     // Model selection
     const modelMatch = data.match(/^model:(.+)$/);

@@ -468,6 +468,66 @@ async function cmdLicense(): Promise<void> {
   console.log(getLicenseInfo());
 }
 
+async function cmdRecheck(): Promise<void> {
+  const { loadLicense, validateLicense, activateLicense, saveLicense } = await import("./license.js");
+  const state = loadLicense();
+
+  if (!state.licenseKey) {
+    console.error("No license found. Run: clautel activate <key>");
+    process.exit(1);
+  }
+
+  console.log("Checking license with server...");
+  const result = await validateLicense(state);
+
+  if (result === "valid") {
+    state.status = "active";
+    state.lastValidatedAt = new Date().toISOString();
+    state.lastValidationResult = true;
+    state.graceStartedAt = null;
+    state.warningsSent = 0;
+    saveLicense(state);
+    console.log("License is active.");
+    console.log("Restart the daemon: clautel stop && clautel start");
+    return;
+  }
+
+  if (result === "invalid") {
+    console.error("Server says this license is cancelled or expired.");
+    console.error("If you believe this is wrong, contact support.");
+    process.exit(1);
+  }
+
+  // result === "error": server responded but rejected our stored instance.
+  // Deactivate the stale instance first (frees the slot), then re-activate.
+  console.log("Stored instance is stale — freeing slot and re-activating...");
+
+  // Save key and plan before deactivation nulls them out
+  const licenseKey = state.licenseKey;
+  const plan = state.plan;
+
+  const { deactivateLicense } = await import("./license.js");
+  await deactivateLicense(state).catch(() => {}); // ignore errors — instance may already be gone
+
+  let ownerId: number | undefined;
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      ownerId = cfg.TELEGRAM_OWNER_ID;
+    }
+  } catch {}
+
+  const reactivate = await activateLicense(licenseKey, ownerId, plan);
+  if (reactivate.success) {
+    console.log("License re-activated successfully.");
+    console.log("Restart the daemon: clautel stop && clautel start");
+  } else {
+    console.error(`Re-activation failed: ${reactivate.error}`);
+    console.error("Try manually: clautel deactivate && clautel activate <your-license-key>");
+    process.exit(1);
+  }
+}
+
 function cmdHelp(): void {
   console.log(`
 Clautel — Telegram bridge for Claude Code
@@ -483,6 +543,7 @@ Commands:
   activate <key>     Activate a license key
   deactivate         Deactivate this machine's license
   license            Show current license status
+  recheck            Force re-validate license with server (fixes false expired)
   install-service    Install as a macOS launchd service (auto-restart)
   uninstall-service  Remove the launchd service
   help               Show this help message
@@ -521,6 +582,9 @@ switch (command) {
     break;
   case "license":
     cmdLicense().catch((err) => { console.error(err); process.exit(1); });
+    break;
+  case "recheck":
+    cmdRecheck().catch((err) => { console.error(err); process.exit(1); });
     break;
   case "install-service":
     cmdInstallService().catch((err) => { console.error(err); process.exit(1); });

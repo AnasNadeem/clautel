@@ -8,6 +8,7 @@ import { createWorker } from "./worker.js";
 import { loadBots, addBot, removeBot } from "./store.js";
 import type { BotConfig } from "./store.js";
 import { DATA_DIR } from "./config.js";
+import { BrowserManager } from "./browser.js";
 
 import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl, detectClaudePlan, getPlanLabel, LICENSE_CANARY, checkLicenseForQuery } from "./license.js";
 
@@ -23,18 +24,20 @@ const LICENSE_FN_HASH = crypto.createHash("sha256").update(checkLicenseForQuery.
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const HEALTH_CHECK_INTERVAL_MS = 60_000; // 1 minute — fast recovery after sleep/network loss
 
-const activeWorkers = new Map<number, { config: BotConfig; bot: Bot; bridge: ClaudeBridge }>();
+const activeWorkers = new Map<number, { config: BotConfig; bot: Bot; bridge: ClaudeBridge; browserManager: BrowserManager }>();
 let healthCheckTimer: NodeJS.Timeout | null = null;
 let licenseTimer: NodeJS.Timeout | null = null;
 
 const WORKER_COMMANDS = [
-  { command: "new",      description: "Start a fresh session" },
-  { command: "model",    description: "Switch Claude model (Opus / Sonnet / Haiku)" },
-  { command: "cost",     description: "Show token usage for this session" },
-  { command: "session",  description: "Get session ID to resume in CLI" },
-  { command: "cancel",   description: "Abort the current operation" },
-  { command: "feedback", description: "Send feedback or report an issue" },
-  { command: "help",     description: "Show help" },
+  { command: "new",        description: "Start a fresh session" },
+  { command: "model",      description: "Switch Claude model (Opus / Sonnet / Haiku)" },
+  { command: "cost",       description: "Show token usage for this session" },
+  { command: "session",    description: "Get session ID to resume in CLI" },
+  { command: "cancel",     description: "Abort the current operation" },
+  { command: "feedback",   description: "Send feedback or report an issue" },
+  { command: "help",       description: "Show help" },
+  { command: "preview",    description: "Open URL in browser and screenshot it" },
+  { command: "browser",    description: "Show current page with interactive controls" },
 ];
 
 const MANAGER_COMMANDS = [
@@ -50,13 +53,14 @@ const MANAGER_COMMANDS = [
 
 async function startWorker(botConfig: BotConfig): Promise<void> {
   const bridge = new ClaudeBridge(botConfig.id, botConfig.workingDir, botConfig.username);
-  const bot = createWorker(botConfig, bridge);
+  const browserManager = new BrowserManager();
+  const bot = createWorker(botConfig, bridge, browserManager);
 
   await bot.init();
   await bot.api.setMyCommands(WORKER_COMMANDS);
 
   addBot(botConfig);
-  activeWorkers.set(botConfig.id, { config: botConfig, bot, bridge });
+  activeWorkers.set(botConfig.id, { config: botConfig, bot, bridge, browserManager });
 
   // Fire-and-forget: polling runs in background
   // On error, remove from activeWorkers but KEEP in bots.json so health check restarts it
@@ -73,6 +77,7 @@ async function stopWorker(botId: number): Promise<void> {
   if (!worker) return;
 
   worker.bridge.abortAll();
+  await worker.browserManager.close();
   await worker.bot.stop();
   activeWorkers.delete(botId);
   removeBot(botId);
@@ -197,6 +202,7 @@ const shutdown = async () => {
   if (healthCheckTimer) clearInterval(healthCheckTimer);
   for (const [, worker] of activeWorkers) {
     worker.bridge.abortAll();
+    try { await worker.browserManager.close(); } catch {}
     try { await worker.bot.stop(); } catch {}
   }
   activeWorkers.clear();

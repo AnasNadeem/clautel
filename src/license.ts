@@ -594,8 +594,20 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
   invalidateCache();
   const state = getCachedLicense();
 
-  // Expired — blocked
+  // Expired — try one server check before blocking (covers renewal gaps / transient blips)
   if (state.status === "expired") {
+    if (state.licenseKey && state.instanceId) {
+      const result = await validateLicense(state);
+      if (result === "valid") {
+        state.status = "active";
+        state.lastValidatedAt = new Date().toISOString();
+        state.lastValidationResult = true;
+        state.graceStartedAt = null;
+        state.warningsSent = 0;
+        saveLicense(state);
+        return { allowed: true };
+      }
+    }
     return { allowed: false, reason: "License expired." };
   }
 
