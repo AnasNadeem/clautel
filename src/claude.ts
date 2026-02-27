@@ -230,6 +230,122 @@ export class ClaudeBridge {
     return this.sessions.get(chatId);
   }
 
+  setSessionId(chatId: number, sessionId: string): void {
+    this.sessions.set(chatId, sessionId);
+    this.sessionTokens.delete(chatId);
+    this.sessionApprovedTools.delete(chatId);
+    this.saveState();
+  }
+
+  getProjectSessionsDir(): string {
+    const projectKey = this.workingDir.replace(/\//g, "-");
+    return path.join(os.homedir(), ".claude", "projects", projectKey);
+  }
+
+  listRecentSessions(limit = 10): Array<{ sessionId: string; modifiedAt: Date; promptPreview: string }> {
+    const dir = this.getProjectSessionsDir();
+    if (!fs.existsSync(dir)) return [];
+
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => {
+        const fullPath = path.join(dir, f);
+        const stat = fs.statSync(fullPath);
+        return { name: f, fullPath, mtime: stat.mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, limit);
+
+    return files.map(({ name, fullPath, mtime }) => {
+      const sessionId = name.replace(/\.jsonl$/, "");
+      let promptPreview = "(no preview)";
+
+      try {
+        const fd = fs.openSync(fullPath, "r");
+        const buf = Buffer.alloc(8192);
+        const bytesRead = fs.readSync(fd, buf, 0, 8192, 0);
+        fs.closeSync(fd);
+
+        const chunk = buf.toString("utf-8", 0, bytesRead);
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === "user" && entry.sessionId === sessionId) {
+              const content = entry.message?.content;
+              let text = "";
+              if (typeof content === "string") {
+                text = content;
+              } else if (Array.isArray(content)) {
+                const textBlock = content.find((b: Record<string, unknown>) => b.type === "text");
+                if (textBlock) text = String(textBlock.text || "");
+              }
+              if (text) {
+                promptPreview = text.length > 80 ? text.slice(0, 80) + "..." : text;
+                break;
+              }
+            }
+          } catch {}
+        }
+      } catch {}
+
+      return { sessionId, modifiedAt: new Date(mtime), promptPreview };
+    });
+  }
+
+  getSessionHistory(sessionId: string, limit = 10): Array<{ role: "user" | "assistant"; text: string; timestamp: string }> {
+    try {
+      const filePath = path.join(this.getProjectSessionsDir(), `${sessionId}.jsonl`);
+      if (!fs.existsSync(filePath)) return [];
+
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const entries: Array<{ role: "user" | "assistant"; text: string; timestamp: string }> = [];
+
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type !== "user" && entry.type !== "assistant") continue;
+
+          const content = entry.message?.content;
+          let text = "";
+
+          if (entry.type === "user") {
+            if (typeof content === "string") {
+              text = content;
+            } else if (Array.isArray(content)) {
+              const textBlock = content.find((b: Record<string, unknown>) => b.type === "text");
+              if (textBlock) text = String(textBlock.text || "");
+            }
+          } else {
+            // assistant — extract only text blocks, skip thinking/tool_use
+            if (Array.isArray(content)) {
+              const texts = content
+                .filter((b: Record<string, unknown>) => b.type === "text")
+                .map((b: Record<string, unknown>) => String(b.text || ""));
+              text = texts.join("\n");
+            }
+          }
+
+          if (!text.trim()) continue;
+
+          const truncated = text.length > 500 ? text.slice(0, 500) + "..." : text;
+          entries.push({
+            role: entry.type as "user" | "assistant",
+            text: truncated,
+            timestamp: entry.timestamp || "",
+          });
+        } catch {}
+      }
+
+      return entries.slice(-limit);
+    } catch {
+      return [];
+    }
+  }
+
   cancelQuery(chatId: number): boolean {
     const controller = this.activeAborts.get(chatId);
     if (controller) {

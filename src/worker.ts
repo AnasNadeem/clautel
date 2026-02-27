@@ -77,6 +77,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, browser
     "/model — Switch Claude model (Opus / Sonnet / Haiku)\n" +
     "/cost — Show token usage for the current session\n" +
     "/session — Get session ID to continue in CLI\n" +
+    "/resume — Resume a CLI session in Telegram\n" +
     "/cancel — Abort the current operation\n" +
     "/feedback — Send feedback or report an issue\n" +
     "/help — Show this help message\n\n" +
@@ -168,6 +169,52 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, browser
         `Tap the command above to copy it.`,
       { parse_mode: "HTML" }
     );
+  });
+
+  bot.command("resume", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const args = ctx.match?.toString().trim();
+
+    if (args) {
+      // Direct resume: /resume <session_id>
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(args)) {
+        await ctx.reply("Invalid session ID format. Expected a UUID like: abc12345-1234-1234-1234-123456789abc");
+        return;
+      }
+
+      const sessionFile = path.join(bridge.getProjectSessionsDir(), `${args}.jsonl`);
+      if (!fs.existsSync(sessionFile)) {
+        await ctx.reply("Session file not found. Make sure this session was created in the current project directory.");
+        return;
+      }
+
+      if (bridge.isProcessing(chatId)) {
+        bridge.cancelQuery(chatId);
+      }
+
+      bridge.setSessionId(chatId, args);
+      await sendSessionHistory(chatId, args);
+      await ctx.reply(`Session resumed: <code>${args}</code>\n\nSend a message to continue.`, { parse_mode: "HTML" });
+    } else {
+      // List recent sessions
+      const sessions = bridge.listRecentSessions(8);
+      if (sessions.length === 0) {
+        await ctx.reply("No CLI sessions found for this project directory.");
+        return;
+      }
+
+      const keyboard = new InlineKeyboard();
+      for (const s of sessions) {
+        const dateStr = s.modifiedAt.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
+          ", " + s.modifiedAt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+        const label = `${dateStr} — ${s.promptPreview}`;
+        const truncatedLabel = label.length > 60 ? label.slice(0, 57) + "..." : label;
+        keyboard.text(truncatedLabel, `resume:${s.sessionId}`).row();
+      }
+
+      await ctx.reply("Select a session to resume:", { reply_markup: keyboard });
+    }
   });
 
   bot.command("feedback", async (ctx) => {
@@ -674,6 +721,31 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, browser
     return `[Replying to message: "${preview}"]\n\n`;
   }
 
+  async function sendSessionHistory(chatId: number, sessionId: string): Promise<void> {
+    try {
+      const history = bridge.getSessionHistory(sessionId, 10);
+      if (history.length === 0) return;
+
+      let html = "<b>Conversation history:</b>\n\n";
+      for (const entry of history) {
+        if (entry.role === "user") {
+          html += `<b>You:</b>\n${escapeHtml(entry.text)}\n\n`;
+        } else {
+          html += `<b>Claude:</b>\n${claudeToTelegram(entry.text)}\n\n`;
+        }
+      }
+
+      const parts = splitMessage(html.trimEnd());
+      for (const part of parts) {
+        try {
+          await bot.api.sendMessage(chatId, part, { parse_mode: "HTML" });
+        } catch {
+          await bot.api.sendMessage(chatId, part).catch(() => {});
+        }
+      }
+    } catch {}
+  }
+
   bot.on("message:text", (ctx) => {
     const chatId = ctx.chat.id;
 
@@ -829,6 +901,27 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, browser
         { parse_mode: "HTML" }
       ).catch(() => {});
       await ctx.answerCallbackQuery(`Switched to ${label}`).catch(() => {});
+      return;
+    }
+
+    // Resume session selection
+    const resumeMatch = data.match(/^resume:(.+)$/);
+    if (resumeMatch) {
+      const sessionId = resumeMatch[1];
+      const chatId = ctx.chat!.id;
+
+      if (bridge.isProcessing(chatId)) {
+        bridge.cancelQuery(chatId);
+      }
+
+      bridge.setSessionId(chatId, sessionId);
+
+      await ctx.editMessageText(
+        `Session resumed: <code>${sessionId}</code>\n\nSend a message to continue.`,
+        { parse_mode: "HTML" }
+      ).catch(() => {});
+      await sendSessionHistory(chatId, sessionId);
+      await ctx.answerCallbackQuery("Session resumed").catch(() => {});
       return;
     }
 
