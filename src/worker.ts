@@ -75,6 +75,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
     "/model — Switch Claude model (Opus / Sonnet / Haiku)\n" +
     "/cost — Show token usage for the current session\n" +
     "/session — Get session ID to continue in CLI\n" +
+    "/resume — Resume a CLI session in Telegram\n" +
     "/cancel — Abort the current operation\n" +
     "/feedback — Send feedback or report an issue\n" +
     "/help — Show this help message\n\n" +
@@ -159,6 +160,51 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
         `Tap the command above to copy it.`,
       { parse_mode: "HTML" }
     );
+  });
+
+  bot.command("resume", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const args = ctx.match?.toString().trim();
+
+    if (args) {
+      // Direct resume: /resume <session_id>
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(args)) {
+        await ctx.reply("Invalid session ID format. Expected a UUID like: abc12345-1234-1234-1234-123456789abc");
+        return;
+      }
+
+      const sessionFile = path.join(bridge.getProjectSessionsDir(), `${args}.jsonl`);
+      if (!fs.existsSync(sessionFile)) {
+        await ctx.reply("Session file not found. Make sure this session was created in the current project directory.");
+        return;
+      }
+
+      if (bridge.isProcessing(chatId)) {
+        bridge.cancelQuery(chatId);
+      }
+
+      bridge.setSessionId(chatId, args);
+      await ctx.reply(`Session resumed: <code>${args}</code>\n\nSend a message to continue.`, { parse_mode: "HTML" });
+    } else {
+      // List recent sessions
+      const sessions = bridge.listRecentSessions(8);
+      if (sessions.length === 0) {
+        await ctx.reply("No CLI sessions found for this project directory.");
+        return;
+      }
+
+      const keyboard = new InlineKeyboard();
+      for (const s of sessions) {
+        const dateStr = s.modifiedAt.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
+          ", " + s.modifiedAt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+        const label = `${dateStr} — ${s.promptPreview}`;
+        const truncatedLabel = label.length > 60 ? label.slice(0, 57) + "..." : label;
+        keyboard.text(truncatedLabel, `resume:${s.sessionId}`).row();
+      }
+
+      await ctx.reply("Select a session to resume:", { reply_markup: keyboard });
+    }
   });
 
   bot.command("feedback", async (ctx) => {
@@ -630,6 +676,26 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge): Bot {
         { parse_mode: "HTML" }
       ).catch(() => {});
       await ctx.answerCallbackQuery(`Switched to ${label}`).catch(() => {});
+      return;
+    }
+
+    // Resume session selection
+    const resumeMatch = data.match(/^resume:(.+)$/);
+    if (resumeMatch) {
+      const sessionId = resumeMatch[1];
+      const chatId = ctx.chat!.id;
+
+      if (bridge.isProcessing(chatId)) {
+        bridge.cancelQuery(chatId);
+      }
+
+      bridge.setSessionId(chatId, sessionId);
+
+      await ctx.editMessageText(
+        `Session resumed: <code>${sessionId}</code>\n\nSend a message to continue.`,
+        { parse_mode: "HTML" }
+      ).catch(() => {});
+      await ctx.answerCallbackQuery("Session resumed").catch(() => {});
       return;
     }
 
