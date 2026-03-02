@@ -47,24 +47,26 @@ Then DM each worker bot directly to use Claude Code:
 | `/cost` | Show token usage for the session |
 | `/session` | Get session ID to continue in CLI |
 | `/resume` | Resume a CLI session in Telegram |
+| `/preview` | Start dev server and open live preview |
+| `/preview <port>` | Open tunnel to a running server |
+| `/close` | Close active preview tunnel |
 | `/new` | Start a fresh session |
 | `/cancel` | Abort current operation |
 | `/feedback` | Send feedback or report an issue |
 
-### Browser Preview
+### Live Preview
 
-Preview and interact with web pages directly from Telegram — works with `localhost`, staging URLs, or any site.
+Preview your dev server on your phone with a public URL — powered by [ngrok](https://ngrok.com).
 
 | Command | Description |
 |---|---|
-| `/preview <url>` | Open a URL and see a live screenshot |
-| `/click <x> <y>` | Click at coordinates on the page |
-| `/scroll <up\|down> [amount]` | Scroll the page |
-| `/type <text>` | Type into the focused input |
-| `/navigate <url>` | Go to a different URL |
-| `/browser` | Show current page with controls |
+| `/preview` | Claude starts the dev server and opens an ngrok tunnel |
+| `/preview <port>` | Open a tunnel to an already-running server |
+| `/close` | Close an active preview tunnel |
 
-Screenshots update in-place with interactive controls: scroll up/down, back/forward, refresh, and close.
+When you run `/preview` without a port, Claude will automatically start the dev server, set up ngrok, and share the public URL. You can also pass a port directly (e.g. `/preview 3000`) to tunnel an existing server instantly.
+
+You'll be prompted for a free ngrok auth token on first use, or you can set it up during `clautel setup`.
 
 ### Session Continuity
 
