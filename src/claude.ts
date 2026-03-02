@@ -170,12 +170,17 @@ export class ClaudeBridge {
   private lastQueryEnd = new Map<number, number>();
   private lastPrompts = new Map<number, string>();
   private sessionApprovedTools = new Map<number, Set<string>>();
+  // Strip CLAUDECODE env var once so SDK subprocesses don't refuse to start
+  // when the daemon is launched from within a Claude Code session.
+  private readonly cleanEnv: Record<string, string | undefined>;
 
   constructor(botId: number, workingDir: string, tag: string) {
     this.botId = botId;
     this.workingDir = workingDir;
     this.tag = tag;
     this.stateFile = path.join(config.DATA_DIR, `state-${botId}.json`);
+    const { CLAUDECODE: _, ...cleanEnv } = process.env;
+    this.cleanEnv = cleanEnv;
     this.loadState();
   }
 
@@ -428,6 +433,7 @@ export class ClaudeBridge {
       const q = query({
         prompt,
         options: {
+          env: this.cleanEnv,
           cwd: this.workingDir,
           model,
           includePartialMessages: true,
@@ -641,6 +647,7 @@ export class ClaudeBridge {
               new Error(errors?.join(", ") || "Claude query failed")
             );
           }
+          break; // Result is the final message — exit immediately so the bot is ready for new requests
         }
       }
     } catch (error) {
