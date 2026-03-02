@@ -67,8 +67,8 @@ async function cmdSetup(): Promise<void> {
 
   console.log("Clautel — Setup\n");
 
-  // Step 1/3: Bot token with live validation
-  console.log("Step 1/3: Manager Bot");
+  // Step 1/4: Bot token with live validation
+  console.log("Step 1/4: Manager Bot");
   console.log("  Create a bot via @BotFather on Telegram and paste the token here.");
   console.log("  It looks like: 123456:ABC-DEF...\n");
 
@@ -96,8 +96,8 @@ async function cmdSetup(): Promise<void> {
     }
   }
 
-  // Step 2/3: Owner Telegram ID
-  console.log("Step 2/3: Your Telegram ID");
+  // Step 2/4: Owner Telegram ID
+  console.log("Step 2/4: Your Telegram ID");
   console.log("  This ensures only you can use the bot.");
   console.log("  To find your ID:");
   console.log("    1. Open Telegram and search for @userinfobot");
@@ -115,18 +115,33 @@ async function cmdSetup(): Promise<void> {
     break;
   }
 
+  // Step 3: Ngrok Configuration (optional, for live preview)
+  console.log("Step 3/4: Ngrok Configuration (for live preview)");
+  console.log("  To preview your dev server from your phone, Clautel can create ngrok tunnels.");
+  console.log("  Get a free auth token at: https://dashboard.ngrok.com/get-started/your-authtoken");
+  console.log("  Press Enter to skip.\n");
+
+  const ngrokToken = (await ask("  Ngrok auth token: ")).trim();
+  if (ngrokToken) {
+    console.log("  Ngrok token saved.\n");
+  } else {
+    console.log("  Skipped — you can configure it later via NGROK_AUTH_TOKEN env var or re-run setup.\n");
+  }
+
   // Write config
+  const configData: Record<string, unknown> = { TELEGRAM_BOT_TOKEN: token, TELEGRAM_OWNER_ID: ownerId };
+  if (ngrokToken) configData.NGROK_AUTH_TOKEN = ngrokToken;
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     CONFIG_FILE,
-    JSON.stringify({ TELEGRAM_BOT_TOKEN: token, TELEGRAM_OWNER_ID: ownerId }, null, 2),
+    JSON.stringify(configData, null, 2),
     { mode: 0o600 }
   );
 
-  // Step 3/3: License
+  // Step 4/4: License
   const { getPaymentUrl, activateLicense, getPlanLabel, saveClaudePlan } = await import("./license.js");
 
-  console.log("Step 3/3: License\n");
+  console.log("Step 4/4: License\n");
   console.log("  Choose your plan:\n");
   console.log("    [1] Pro — $4/mo");
   console.log("        Up to 5 project bots\n");
@@ -318,6 +333,16 @@ async function cmdInstallService(): Promise<void> {
   if (process.env.ANTHROPIC_API_KEY) {
     envEntries.push(`    <key>ANTHROPIC_API_KEY</key>\n    <string>${process.env.ANTHROPIC_API_KEY}</string>`);
   }
+
+  // Include ngrok token from config if available
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+      if (cfg.NGROK_AUTH_TOKEN) {
+        envEntries.push(`    <key>NGROK_AUTH_TOKEN</key>\n    <string>${cfg.NGROK_AUTH_TOKEN}</string>`);
+      }
+    }
+  } catch {}
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

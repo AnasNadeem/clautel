@@ -9,6 +9,7 @@ const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 interface SavedConfig {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_OWNER_ID?: number;
+  NGROK_AUTH_TOKEN?: string;
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -35,5 +36,6 @@ const saved = loadSavedConfig();
 export const config = {
   TELEGRAM_BOT_TOKEN: required("TELEGRAM_BOT_TOKEN", saved.TELEGRAM_BOT_TOKEN),
   TELEGRAM_OWNER_ID: Number(required("TELEGRAM_OWNER_ID", saved.TELEGRAM_OWNER_ID)),
+  NGROK_AUTH_TOKEN: process.env.NGROK_AUTH_TOKEN ?? saved.NGROK_AUTH_TOKEN ?? undefined,
   DATA_DIR,
 };
