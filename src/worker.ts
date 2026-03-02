@@ -61,7 +61,10 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
       if (fs.existsSync(CONFIG_FILE)) {
         existing = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
       }
-    } catch {}
+    } catch (error) {
+      console.error(`[${tag}] Failed to parse config file, not saving ngrok token:`, error);
+      return;
+    }
     existing.NGROK_AUTH_TOKEN = token;
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2), { mode: 0o600 });
   }
@@ -255,9 +258,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
   }
 
   function buildPreviewPrompt(): string {
-    const tokenPart = config.NGROK_AUTH_TOKEN
-      ? `The ngrok auth token is: ${config.NGROK_AUTH_TOKEN}`
-      : `The ngrok auth token is stored in ${CONFIG_FILE} under the key NGROK_AUTH_TOKEN. Read it from there.`;
+    const tokenPart = `The ngrok auth token is stored in the NGROK_AUTH_TOKEN environment variable or in the project's config file at ${CONFIG_FILE}.`;
 
     return (
       "Start the dev server for this project. Install any missing dependencies if needed. " +

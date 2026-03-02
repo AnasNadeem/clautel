@@ -342,7 +342,9 @@ async function cmdInstallService(): Promise<void> {
         envEntries.push(`    <key>NGROK_AUTH_TOKEN</key>\n    <string>${cfg.NGROK_AUTH_TOKEN}</string>`);
       }
     }
-  } catch {}
+  } catch (error) {
+    console.warn(`[warning] Could not read ngrok token from config file: ${(error as Error).message}`);
+  }
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
