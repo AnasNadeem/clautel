@@ -417,7 +417,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
 
         // Fallback path: editMessageText with HTML
         if (!thinkingMsgId) return;
-        const htmlFooter = currentActivity ? `\n\n<i>${currentActivity}</i>` : "";
+        const htmlFooter = currentActivity ? `\n\n<i>${escapeHtml(currentActivity)}</i>` : "";
         let htmlContent: string;
         if (buffer.trim()) {
           let html = claudeToTelegram(buffer);
@@ -436,10 +436,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
           });
         } catch {
           try {
-            if (plainContent !== lastEditedText) {
-              lastEditedText = plainContent;
-              await bot.api.editMessageText(chatId, thinkingMsgId, plainContent);
-            }
+            await bot.api.editMessageText(chatId, thinkingMsgId, plainContent);
           } catch {}
         }
       };
