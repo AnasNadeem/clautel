@@ -629,7 +629,8 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         const parts = splitMessage(html);
 
         if (draftActive) {
-          // Draft disappears naturally when we send the final message(s)
+          // Clear the draft ghost bubble before sending real messages
+          await bot.api.sendMessageDraft(chatId, draftId, " ").catch(() => {});
           draftActive = false;
         } else if (thinkingMsgId) {
           try {
@@ -675,7 +676,8 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         const keyboard = new InlineKeyboard().text("Retry", `retry:${retryId}`);
 
         if (draftActive) {
-          // Drafts can't have inline keyboards — send error as a new message
+          // Clear draft ghost, then send error as a new message (drafts can't have keyboards)
+          await bot.api.sendMessageDraft(chatId, draftId, " ").catch(() => {});
           draftActive = false;
           await bot.api.sendMessage(chatId, `Error: ${error.message}`, {
             reply_markup: keyboard,
@@ -715,7 +717,8 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         clearInterval(typingInterval);
         if (editTimer) clearTimeout(editTimer);
         if (draftActive) {
-          // Draft disappears; send "Cancelled." as a real message
+          // Clear draft ghost, then send "Cancelled." as a real message
+          await bot.api.sendMessageDraft(chatId, draftId, " ").catch(() => {});
           await bot.api.sendMessage(chatId, "Cancelled.").catch(() => {});
         } else if (thinkingMsgId) {
           try {
