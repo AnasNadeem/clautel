@@ -106,6 +106,52 @@ npm install -g clautel@latest
 clautel stop && clautel start
 ```
 
+## Architecture
+
+```
+┌─────────────┐      ┌──────────────┐      ┌──────────────────┐
+│  Telegram    │◄────►│  Manager Bot │      │  Anthropic API   │
+│  (your phone)│      │  (add/remove)│      │  (Claude)        │
+└─────────────┘      └──────┬───────┘      └────────▲─────────┘
+                            │                        │
+                     ┌──────▼───────┐        ┌───────┴────────┐
+                     │  Daemon      │───────►│  Claude Agent   │
+                     │  (daemon.ts) │        │  SDK (query)    │
+                     └──────┬───────┘        └────────────────┘
+                            │
+                ┌───────────┼───────────┐
+                ▼           ▼           ▼
+         ┌──────────┐┌──────────┐┌──────────┐
+         │ Worker 1 ││ Worker 2 ││ Worker N │
+         │ (repo A) ││ (repo B) ││ (repo N) │
+         └──────────┘└──────────┘└──────────┘
+```
+
+- **Daemon** — single background process, manages bots and license
+- **Manager bot** — Telegram bot to add/remove project workers
+- **Worker bots** — one per project directory, full Claude Code access
+- **License client** — validates against `license.clautel.com` (Ed25519 signed tokens)
+
+## Data Flow
+
+| Connection | Destination | What's sent |
+|---|---|---|
+| Telegram Bot API | `api.telegram.org` | Messages, photos, documents (long polling) |
+| Anthropic API | Via Claude Agent SDK | Your prompts + project files (as needed by Claude) |
+| License proxy | `license.clautel.com` | License key + hashed instance ID |
+| ngrok (optional) | `ngrok.com` | Dev server tunnel (only when you use `/preview`) |
+
+No telemetry, no analytics, no tracking. The daemon only contacts the services listed above.
+
+## Security & Transparency
+
+This project is source-available. You can audit every line of code that runs on your machine.
+
+- See [SECURITY.md](SECURITY.md) for full details on network connections, local storage, and how to verify
+- All local files stored in `~/.clautel/` with `0600` permissions
+- Verify network connections yourself: `lsof -i -P | grep node` while the daemon runs
+- License validation uses Ed25519 signed tokens — the private key lives in Cloudflare secrets, not in this repo
+
 ## Requirements
 
 - Node.js >= 18
@@ -113,4 +159,12 @@ clautel stop && clautel start
 
 ## License
 
-MIT
+Business Source License 1.1 (BSL-1.1). See [LICENSE](LICENSE) for full terms.
+
+- **Personal and internal business use in production is permitted.**
+- The restriction is on offering the Licensed Work as a commercial hosted service.
+- Converts to MIT on 2030-03-03 (4 years).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, code style, and PR guidelines.

@@ -4,12 +4,7 @@ import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "./config.js";
 import { logTool, logApproval, logStatus } from "./log.js";
-import { checkLicenseForQuery, LICENSE_CANARY } from "./license.js";
-
-// Cross-module integrity: verify license module hasn't been patched
-if (LICENSE_CANARY !== "L1c3ns3-Ch3ck-V2") {
-  throw new Error("Integrity check failed: license module has been tampered with.");
-}
+import { checkLicenseForQuery } from "./license.js";
 
 const COOLDOWN_MS = 2000;
 const THINKING_ROTATE_MS = 2000;

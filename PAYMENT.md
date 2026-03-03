@@ -115,8 +115,6 @@ active ──(subscription lapses)──→ grace (1h) ──→ expired
 | Layer | Description |
 |-------|-------------|
 | Per-installation HMAC key | Random 64-byte key generated on first run at `~/.clautel/.integrity-key` (mode `0600`). Each machine has a unique key — forging a checksum requires the key file from that specific installation. |
-| Integrity canaries | `license.ts` exports `LICENSE_CANARY`. `daemon.ts`, `worker.ts`, and `claude.ts` verify it at module load. Patching `dist/license.js` to skip checks without also patching all three consumers causes an integrity failure. |
-| Function hash verification | `daemon.ts` computes SHA-256 of `checkLicenseForQuery.toString()` at startup. The health check (every 60s) recomputes and compares. Hot-patching the function at runtime is detected. |
 | Three-gate validation | Startup gate in `daemon.ts` (async, remote), per-query gate in `worker.ts` (sync, in-memory), secondary gate in `claude.ts` (sync, backup). All three must pass. |
 | Strict response validation | HTTP 200 responses must contain expected JSON fields (`body.id` must be a string). Empty 200 from a local proxy is rejected. |
 | Immediate expiry persistence | Security-critical state transitions (grace → expired) use `saveLicense()` + `invalidateCache()` instead of debounced writes, preventing process-kill race conditions. |
@@ -137,9 +135,9 @@ active ──(subscription lapses)──→ grace (1h) ──→ expired
 | File | Purpose |
 |------|---------|
 | `src/license.ts` | Core module: state I/O, Ed25519 verification, proxy integration, grace logic, HMAC checksums |
-| `src/daemon.ts` | Startup license gate, periodic validation, integrity checks |
-| `src/worker.ts` | Per-query license gate, canary verification |
-| `src/claude.ts` | Secondary license gate, canary verification |
+| `src/daemon.ts` | Startup license gate, periodic validation |
+| `src/worker.ts` | Per-query license gate |
+| `src/claude.ts` | Secondary license gate |
 | `proxy/src/worker.ts` | Cloudflare Worker: forwards to Dodo, signs responses with Ed25519 |
 | `proxy/wrangler.toml` | Worker configuration |
 | `scripts/keygen.mjs` | One-time Ed25519 keypair generator |

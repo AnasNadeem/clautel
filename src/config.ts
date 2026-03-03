@@ -10,6 +10,7 @@ interface SavedConfig {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_OWNER_ID?: number;
   NGROK_AUTH_TOKEN?: string;
+  ANTHROPIC_API_KEY?: string;
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -33,9 +34,14 @@ function required(name: string, savedValue?: string | number): string {
 
 const saved = loadSavedConfig();
 
+// Make ANTHROPIC_API_KEY available from config file as fallback for launchd (no env secrets in plist)
+const anthropicKey = process.env.ANTHROPIC_API_KEY ?? saved.ANTHROPIC_API_KEY;
+if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
+
 export const config = {
   TELEGRAM_BOT_TOKEN: required("TELEGRAM_BOT_TOKEN", saved.TELEGRAM_BOT_TOKEN),
   TELEGRAM_OWNER_ID: Number(required("TELEGRAM_OWNER_ID", saved.TELEGRAM_OWNER_ID)),
   NGROK_AUTH_TOKEN: process.env.NGROK_AUTH_TOKEN ?? saved.NGROK_AUTH_TOKEN ?? undefined,
+  ANTHROPIC_API_KEY: anthropicKey,
   DATA_DIR,
 };

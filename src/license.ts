@@ -63,10 +63,6 @@ function getIntegrityKey(): Buffer {
   return newKey;
 }
 
-// --- Canary ---
-// Cross-module integrity check: other modules verify this value at load/startup
-export const LICENSE_CANARY = "L1c3ns3-Ch3ck-V2";
-
 // --- Types ---
 
 interface SignedToken {

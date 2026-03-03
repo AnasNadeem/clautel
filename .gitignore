@@ -4,3 +4,8 @@ dist/
 *.log
 .tmp-images/
 .clautel-state.json
+.DS_Store
+.vscode/
+.idea/
+*.tsbuildinfo
+proxy/node_modules/

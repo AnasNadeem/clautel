@@ -128,9 +128,21 @@ async function cmdSetup(): Promise<void> {
     console.log("  Skipped — you can configure it later via NGROK_AUTH_TOKEN env var or re-run setup.\n");
   }
 
+  // Step 3b: Anthropic API key (optional, needed for launchd service)
+  console.log("  Store your Anthropic API key in config? (needed for launchd auto-start service)");
+  console.log("  If you only use ANTHROPIC_API_KEY env var, press Enter to skip.\n");
+
+  const anthropicKey = (await ask("  Anthropic API key: ")).trim();
+  if (anthropicKey) {
+    console.log("  API key saved.\n");
+  } else {
+    console.log("  Skipped — set ANTHROPIC_API_KEY env var or re-run setup.\n");
+  }
+
   // Write config
   const configData: Record<string, unknown> = { TELEGRAM_BOT_TOKEN: token, TELEGRAM_OWNER_ID: ownerId };
   if (ngrokToken) configData.NGROK_AUTH_TOKEN = ngrokToken;
+  if (anthropicKey) configData.ANTHROPIC_API_KEY = anthropicKey;
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     CONFIG_FILE,
@@ -325,26 +337,11 @@ async function cmdInstallService(): Promise<void> {
   const [cmd, args] = DAEMON_CMD;
   const programArgs = [cmd, ...args];
 
-  // Capture environment variables needed by the daemon
+  // Only PATH and HOME in the plist — secrets come from ~/.clautel/config.json at runtime
   const envEntries: string[] = [
     `    <key>PATH</key>\n    <string>${process.env.PATH || "/usr/local/bin:/usr/bin:/bin"}</string>`,
     `    <key>HOME</key>\n    <string>${os.homedir()}</string>`,
   ];
-  if (process.env.ANTHROPIC_API_KEY) {
-    envEntries.push(`    <key>ANTHROPIC_API_KEY</key>\n    <string>${process.env.ANTHROPIC_API_KEY}</string>`);
-  }
-
-  // Include ngrok token from config if available
-  try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
-      if (cfg.NGROK_AUTH_TOKEN) {
-        envEntries.push(`    <key>NGROK_AUTH_TOKEN</key>\n    <string>${cfg.NGROK_AUTH_TOKEN}</string>`);
-      }
-    }
-  } catch (error) {
-    console.warn(`[warning] Could not read ngrok token from config file: ${(error as Error).message}`);
-  }
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

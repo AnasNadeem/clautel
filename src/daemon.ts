@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
 import { Bot } from "grammy";
 import { ClaudeBridge } from "./claude.js";
 import { createManager } from "./manager.js";
@@ -10,16 +9,7 @@ import type { BotConfig } from "./store.js";
 import { DATA_DIR, config } from "./config.js";
 import { TunnelManager } from "./tunnel.js";
 
-import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl, detectClaudePlan, getPlanLabel, LICENSE_CANARY, checkLicenseForQuery } from "./license.js";
-
-// Cross-module integrity: verify license module hasn't been patched
-if (LICENSE_CANARY !== "L1c3ns3-Ch3ck-V2") {
-  console.error("Integrity check failed: license module has been tampered with.");
-  process.exit(1);
-}
-
-// Compute function hash at startup for periodic runtime verification
-const LICENSE_FN_HASH = crypto.createHash("sha256").update(checkLicenseForQuery.toString()).digest("hex");
+import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl, detectClaudePlan, getPlanLabel } from "./license.js";
 
 const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60_000; // 5 minutes — grammY handles transient reconnects internally
@@ -147,13 +137,6 @@ async function main() {
 
   // Periodic health check: restart dead workers and recover saved bots
   healthCheckTimer = setInterval(async () => {
-    // 0. Runtime integrity check — verify license function hasn't been hot-patched
-    const currentHash = crypto.createHash("sha256").update(checkLicenseForQuery.toString()).digest("hex");
-    if (currentHash !== LICENSE_FN_HASH) {
-      console.error("Integrity check failed: license function has been modified at runtime.");
-      process.exit(1);
-    }
-
     // 1. Check running workers are still reachable
     const deadConfigs: BotConfig[] = [];
     for (const [id, worker] of activeWorkers) {
