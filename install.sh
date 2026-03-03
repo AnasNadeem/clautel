@@ -7,7 +7,7 @@ set -e
 REQUIRED_NODE_MAJOR=18
 
 echo "Installing clautel..."
-echo "License: BSL-1.1 | Source: https://github.com/AnasNadeem/clautel"
+echo "License: MIT | Source: https://github.com/AnasNadeem/clautel"
 echo ""
 
 # Check Node.js

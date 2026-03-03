@@ -159,11 +159,7 @@ This project is source-available. You can audit every line of code that runs on 
 
 ## License
 
-Business Source License 1.1 (BSL-1.1). See [LICENSE](LICENSE) for full terms.
-
-- **Personal and internal business use in production is permitted.**
-- The restriction is on offering the Licensed Work as a commercial hosted service.
-- Converts to MIT on 2030-03-03 (4 years).
+MIT. See [LICENSE](LICENSE) for full terms.
 
 ## Contributing
 

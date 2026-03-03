@@ -24,7 +24,7 @@
     "prepublishOnly": "npm run build"
   },
   "author": "Anas Nadeem",
-  "license": "BUSL-1.1",
+  "license": "MIT",
   "homepage": "https://clautel.com",
   "keywords": [
     "clautel",
