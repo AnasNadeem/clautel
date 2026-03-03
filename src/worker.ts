@@ -474,9 +474,9 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         buffer = "";
         currentActivity = "";
 
-        // Update display to show waiting state
+        // Clear display before sending plan as real messages
         if (draftActive) {
-          await bot.api.sendMessageDraft(chatId, draftId, "Waiting for plan approval...").catch(() => {});
+          await bot.api.sendMessageDraft(chatId, draftId, " ").catch(() => {});
         } else {
           await doEdit();
         }
