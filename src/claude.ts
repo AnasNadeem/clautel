@@ -54,6 +54,7 @@ export interface SendCallbacks {
     durationMs: number;
   }) => void;
   onError: (error: Error) => void;
+  onSessionReset?: () => void;
 }
 
 export const AVAILABLE_MODELS = [
@@ -571,6 +572,9 @@ export class ClaudeBridge {
         if (abortController.signal.aborted) break;
 
         if (message.type === "system" && message.subtype === "init") {
+          if (sessionId && message.session_id !== sessionId) {
+            callbacks.onSessionReset?.();
+          }
           this.sessions.set(chatId, message.session_id);
         } else if (message.type === "stream_event") {
           const event = message.event as Record<string, unknown>;
