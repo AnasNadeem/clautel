@@ -707,6 +707,9 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         onPlanApproval,
         onResult,
         onError,
+        onSessionReset: () => {
+          bot.api.sendMessage(chatId, "Previous session not found. Starting a fresh session.").catch(() => {});
+        },
       });
 
       // Runs if cancelled (onResult/onError were never called)
