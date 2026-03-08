@@ -20,9 +20,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const compiledDaemon = path.join(__dirname, "daemon.js");
 const srcDaemon = path.join(__dirname, "../src/daemon.ts");
 
-const DAEMON_CMD: [string, string[]] = fs.existsSync(compiledDaemon)
-  ? [process.execPath, [compiledDaemon]]
-  : ["npx", ["tsx", srcDaemon]];
+// For global installs, compiledDaemon exists and we use node directly (no shell needed).
+// For local dev, we use npx tsx — resolve npx to a full path to avoid shell:true on Windows.
+function resolveDaemonCmd(): [string, string[]] {
+  if (fs.existsSync(compiledDaemon)) {
+    return [process.execPath, [compiledDaemon]];
+  }
+  // Local dev: use node to run npx-cli.js directly (avoids shell:true on Windows)
+  if (process.platform === "win32") {
+    const npmDir = path.dirname(process.execPath);
+    const npxCli = path.join(npmDir, "node_modules", "npm", "bin", "npx-cli.js");
+    if (fs.existsSync(npxCli)) {
+      return [process.execPath, [npxCli, "tsx", srcDaemon]];
+    }
+  }
+  return ["npx", ["tsx", srcDaemon]];
+}
+
+const DAEMON_CMD = resolveDaemonCmd();
 
 function rotateLog(): void {
   try {
@@ -93,6 +108,42 @@ function getSystemdServicePath(): string {
   return path.join(os.homedir(), ".config", "systemd", "user", "clautel.service");
 }
 
+/** Poll for daemon PID file + running process. Returns PID or null on timeout. */
+async function waitForDaemon(timeoutMs = 10_000, intervalMs = 200): Promise<number | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pid = readPid();
+    if (pid && isRunning(pid)) return pid;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return null;
+}
+
+/** Read the last N bytes of a file and return the last `lineCount` lines. */
+function readTailLines(filePath: string, lineCount: number, maxBytes = 32_768): string[] {
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, "r");
+  } catch {
+    return [];
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    const readSize = Math.min(stat.size, maxBytes);
+    if (readSize === 0) return [];
+    const buf = Buffer.alloc(readSize);
+    fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+    const lines = buf.toString("utf-8").split("\n");
+    // If the file was larger than maxBytes, the first "line" is likely truncated — drop it
+    if (stat.size > maxBytes) lines.shift();
+    // Drop trailing empty line from final newline
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.slice(-lineCount);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function startDirect(): void {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   rotateLog();
@@ -100,13 +151,22 @@ function startDirect(): void {
   const logFd = fs.openSync(LOG_FILE, "a");
 
   const [cmd, args] = DAEMON_CMD;
-  const isWin = process.platform === "win32";
   const child = spawn(cmd, args, {
     detached: true,
     stdio: ["ignore", logFd, logFd],
-    // Windows: shell needed for .cmd scripts (npx), windowsHide suppresses console
-    ...(isWin && { shell: true, windowsHide: true }),
+    ...(process.platform === "win32" && { windowsHide: true }),
   });
+
+  child.on("error", (err) => {
+    console.error(`Failed to start daemon: ${err.message}`);
+    fs.rmSync(PID_FILE, { force: true });
+  });
+
+  if (child.pid == null) {
+    fs.closeSync(logFd);
+    console.error("Failed to start daemon: spawn returned no PID.");
+    return;
+  }
 
   child.unref();
   fs.closeSync(logFd);
@@ -293,20 +353,16 @@ async function cmdStart(): Promise<void> {
       return;
     }
 
-    // Give the daemon a moment to start and write its PID file
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    const newPid = readPid();
-    if (newPid && isRunning(newPid)) {
+    const newPid = await waitForDaemon();
+    if (newPid) {
       console.log(`Started via launchd (PID ${newPid})`);
       console.log(`Logs: clautel logs`);
     } else {
       // Daemon didn't start — show diagnostics and fall back to direct
       console.error("Daemon did not start via launchd.");
       if (fs.existsSync(LOG_FILE)) {
-        const content = fs.readFileSync(LOG_FILE, "utf-8").trim();
-        if (content) {
-          const lines = content.split("\n").slice(-5);
+        const lines = readTailLines(LOG_FILE, 5);
+        if (lines.length > 0) {
           console.error("Recent logs:\n  " + lines.join("\n  "));
         }
       } else {
@@ -338,18 +394,15 @@ async function cmdStart(): Promise<void> {
       return;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    const newPid = readPid();
-    if (newPid && isRunning(newPid)) {
+    const newPid = await waitForDaemon();
+    if (newPid) {
       console.log(`Started via systemd (PID ${newPid})`);
       console.log(`Logs: clautel logs`);
     } else {
       console.error("Daemon did not start via systemd.");
       if (fs.existsSync(LOG_FILE)) {
-        const content = fs.readFileSync(LOG_FILE, "utf-8").trim();
-        if (content) {
-          const lines = content.split("\n").slice(-5);
+        const lines = readTailLines(LOG_FILE, 5);
+        if (lines.length > 0) {
           console.error("Recent logs:\n  " + lines.join("\n  "));
         }
       } else {
@@ -446,15 +499,16 @@ function cmdLogs(): void {
     return;
   }
 
-  // Cross-platform log tailing (no dependency on Unix `tail`)
-  const content = fs.readFileSync(LOG_FILE, "utf-8");
-  const lines = content.split("\n");
-  const last50 = lines.slice(-51).join("\n"); // -51 because last element may be empty
-  process.stdout.write(last50);
-  if (!last50.endsWith("\n")) process.stdout.write("\n");
+  // Print last 50 lines using tail-read (reads only last 32KB, not entire file)
+  const tailLines = readTailLines(LOG_FILE, 50);
+  if (tailLines.length > 0) {
+    process.stdout.write(tailLines.join("\n") + "\n");
+  }
 
   // Follow mode: watch for changes and print new content
   let position = fs.statSync(LOG_FILE).size;
+  const MAX_READ_CHUNK = 1024 * 1024; // 1MB cap per read to prevent OOM
+
   const watcher = fs.watch(LOG_FILE, () => {
     try {
       const stat = fs.statSync(LOG_FILE);
@@ -463,14 +517,17 @@ function cmdLogs(): void {
         position = 0;
       }
       if (stat.size > position) {
+        const readSize = Math.min(stat.size - position, MAX_READ_CHUNK);
         const fd = fs.openSync(LOG_FILE, "r");
-        const buf = Buffer.alloc(stat.size - position);
-        fs.readSync(fd, buf, 0, buf.length, position);
+        const buf = Buffer.alloc(readSize);
+        fs.readSync(fd, buf, 0, readSize, position);
         fs.closeSync(fd);
         process.stdout.write(buf);
-        position = stat.size;
+        position += readSize;
       }
-    } catch {}
+    } catch (err) {
+      console.error(`Log watch error: ${(err as Error).message}`);
+    }
   });
 
   process.on("SIGINT", () => {
@@ -569,20 +626,16 @@ ${envEntries.join("\n")}
     return;
   }
 
-  // Give the daemon a moment to start and write its PID file
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-
-  const newPid = readPid();
-  if (newPid && isRunning(newPid)) {
+  const newPid = await waitForDaemon();
+  if (newPid) {
     console.log("Service installed and started.");
     console.log(`Plist: ${getPlistPath()}`);
     console.log("The daemon will auto-restart on crash and start at login.");
   } else {
     console.error("Service installed but daemon did not start.");
     if (fs.existsSync(LOG_FILE)) {
-      const content = fs.readFileSync(LOG_FILE, "utf-8").trim();
-      if (content) {
-        const lines = content.split("\n").slice(-5);
+      const lines = readTailLines(LOG_FILE, 5);
+      if (lines.length > 0) {
         console.error("Recent logs:\n  " + lines.join("\n  "));
       }
     } else {
@@ -640,20 +693,16 @@ WantedBy=default.target
     return;
   }
 
-  // Give the daemon a moment to start and write its PID file
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-
-  const newPid = readPid();
-  if (newPid && isRunning(newPid)) {
+  const newPid = await waitForDaemon();
+  if (newPid) {
     console.log("Service installed and started.");
     console.log(`Unit: ${getSystemdServicePath()}`);
     console.log("The daemon will auto-restart on crash and start at login.");
   } else {
     console.error("Service installed but daemon did not start.");
     if (fs.existsSync(LOG_FILE)) {
-      const content = fs.readFileSync(LOG_FILE, "utf-8").trim();
-      if (content) {
-        const lines = content.split("\n").slice(-5);
+      const lines = readTailLines(LOG_FILE, 5);
+      if (lines.length > 0) {
         console.error("Recent logs:\n  " + lines.join("\n  "));
       }
     } else {
