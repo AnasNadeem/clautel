@@ -531,6 +531,13 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
       };
 
       const onAskUser = async (questions: AskUserQuestion[]): Promise<Record<string, string>> => {
+        // Pause streaming: cancel pending edits and clear draft ghost bubble
+        // so it doesn't overwrite the inline keyboard buttons
+        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+        if (draftActive) {
+          await bot.api.sendMessageDraft(chatId, draftId, " ").catch(() => {});
+        }
+
         const answers: Record<string, string> = {};
 
         for (let i = 0; i < questions.length; i++) {
@@ -569,14 +576,23 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
           answers[q.question] = answer;
         }
 
+        // Fresh draft ID for the next streaming segment after answers
+        if (draftActive) draftId++;
         return answers;
       };
 
-      const onToolApproval = (
+      const onToolApproval = async (
         toolName: string,
         input: Record<string, unknown>
       ): Promise<"allow" | "always" | "deny"> => {
-        return new Promise((resolve) => {
+        // Pause streaming: cancel pending edits and clear draft ghost bubble
+        // so it doesn't overwrite the inline keyboard buttons
+        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+        if (draftActive) {
+          await bot.api.sendMessageDraft(chatId, draftId, " ").catch(() => {});
+        }
+
+        const result = await new Promise<"allow" | "always" | "deny">((resolve) => {
           const requestId = String(++approvalCounter);
 
           const timer = setTimeout(() => {
@@ -604,6 +620,10 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
               resolve("deny");
             });
         });
+
+        // Fresh draft ID for the next streaming segment after approval
+        if (draftActive) draftId++;
+        return result;
       };
 
       let responseHandled = false;
