@@ -55,6 +55,9 @@ async function startWorker(botConfig: BotConfig): Promise<void> {
   addBot(botConfig);
   activeWorkers.set(botConfig.id, { config: botConfig, bot, bridge, tunnelManager });
 
+  // Cancel any lingering getUpdates sessions from a previous crashed instance
+  await bot.api.deleteWebhook({ drop_pending_updates: false });
+
   // Fire-and-forget: polling runs in background
   // On error, clean up properly and remove from activeWorkers (kept in bots.json so health check restarts it)
   bot.start().catch((err: Error) => {
@@ -118,9 +121,10 @@ async function main() {
   managerBot.catch((err) => {
     if (err.message.includes("409: Conflict")) {
       console.error("Another daemon is already running. Stop it first: clautel stop");
-      process.exit(1);
+    } else {
+      console.error("[manager] Error:", err.message);
     }
-    console.error("[manager] Error:", err.message);
+    shutdown();
   });
 
   await managerBot.api.setMyCommands(MANAGER_COMMANDS);
@@ -182,6 +186,9 @@ async function main() {
     }
   }, HEALTH_CHECK_INTERVAL_MS);
 
+  // Cancel any lingering getUpdates sessions from a previous crashed instance
+  await managerBot.api.deleteWebhook({ drop_pending_updates: false });
+
   // Start manager bot polling — keeps the process alive
   await managerBot.start({
     onStart: (info) => {
@@ -210,7 +217,7 @@ const shutdown = async () => {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Fatal error:", err);
-  process.exit(1);
+  await shutdown();
 });
