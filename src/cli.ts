@@ -352,6 +352,10 @@ async function cmdStart(): Promise<void> {
           const lines = content.split("\n").slice(-5);
           console.error("Recent logs:\n  " + lines.join("\n  "));
         }
+      } else {
+        console.error("No log file — daemon crashed before writing output.");
+        console.error("Run manually to see errors:");
+        console.error(`  ${DAEMON_CMD[0]} ${DAEMON_CMD[1].join(" ")}`);
       }
       console.log("\nFalling back to direct start...");
       await systemctlExec(["stop", "clautel"]);
@@ -843,8 +847,8 @@ Commands:
   deactivate         Deactivate this machine's license
   license            Show current license status
   recheck            Force re-validate license with server (fixes false expired)
-  install-service    Install as a macOS launchd service (auto-restart)
-  uninstall-service  Remove the launchd service
+  install-service    Install as a system service (macOS launchd / Linux systemd)
+  uninstall-service  Remove the system service
   help               Show this help message
 
 Getting started:
