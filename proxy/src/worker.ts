@@ -110,6 +110,8 @@ export default {
         return await handleValidate(body, env);
       } else if (path === "/deactivate") {
         return await handleDeactivate(body, env);
+      } else if (path === "/health-check") {
+        return await handleHealthCheck(body, env);
       }
       return errorResponse("Not found", 404);
     } catch {
@@ -248,6 +250,27 @@ async function handleValidate(body: Record<string, unknown>, env: Env): Promise<
   }
 
   return errorResponse("License server error", 502);
+}
+
+async function handleHealthCheck(body: Record<string, unknown>, env: Env): Promise<Response> {
+  const licenseKey = body.license_key;
+  if (!licenseKey || typeof licenseKey !== "string") {
+    return errorResponse("Missing license_key", 400);
+  }
+
+  const instanceId = typeof body.instance_id === "string" ? body.instance_id : undefined;
+  const plan = typeof body.plan === "string" ? body.plan : undefined;
+
+  await env.LICENSE_KV.put(
+    `activity:${licenseKey}`,
+    JSON.stringify({
+      lastActiveAt: new Date().toISOString(),
+      plan,
+      instanceId,
+    })
+  );
+
+  return jsonResponse({ ok: true });
 }
 
 async function handleDeactivate(body: Record<string, unknown>, env: Env): Promise<Response> {

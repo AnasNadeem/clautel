@@ -704,6 +704,27 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
   return { allowed: false, reason: "Unknown license state." };
 }
 
+// --- Daily Health Check (fire-and-forget) ---
+
+let lastHealthCheckDay: string | null = null;
+
+function sendHealthCheck(state: LicenseState): void {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  fetch(`${PROXY_BASE_URL}/health-check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      license_key: state.licenseKey,
+      instance_id: state.instanceId,
+      plan: state.plan,
+    }),
+    signal: controller.signal,
+  })
+    .catch(() => {})
+    .finally(() => clearTimeout(timeout));
+}
+
 // --- Per-Query Check (Fast, In-Memory) ---
 
 export function checkLicenseForQuery(): LicenseCheckResult {
@@ -724,6 +745,14 @@ export function checkLicenseForQuery(): LicenseCheckResult {
       state.plan = claudeTier;
       markDirty();
     }
+
+    // Daily health check — fire once per calendar day
+    const today = new Date().toISOString().slice(0, 10);
+    if (lastHealthCheckDay !== today) {
+      lastHealthCheckDay = today;
+      sendHealthCheck(state);
+    }
+
     return { allowed: true };
   }
 
@@ -741,6 +770,13 @@ export function checkLicenseForQuery(): LicenseCheckResult {
       saveLicense(state);
       invalidateCache();
       return { allowed: false, reason: `License expired.\n\nRenew: ${getPaymentUrl(state.plan)}` };
+    }
+
+    // Daily health check for grace users too
+    const today = new Date().toISOString().slice(0, 10);
+    if (lastHealthCheckDay !== today) {
+      lastHealthCheckDay = today;
+      sendHealthCheck(state);
     }
 
     const hoursRemaining = Math.ceil((GRACE_PERIOD_MS - graceElapsed) / (60 * 60 * 1000));
