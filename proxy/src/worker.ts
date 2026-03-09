@@ -254,11 +254,18 @@ async function handleValidate(body: Record<string, unknown>, env: Env): Promise<
 
 async function handleHealthCheck(body: Record<string, unknown>, env: Env): Promise<Response> {
   const licenseKey = body.license_key;
-  if (!licenseKey || typeof licenseKey !== "string") {
-    return errorResponse("Missing license_key", 400);
+  const instanceId = body.instance_id;
+  if (!licenseKey || typeof licenseKey !== "string" || !instanceId || typeof instanceId !== "string") {
+    return errorResponse("Missing license_key or instance_id", 400);
   }
 
-  const instanceId = typeof body.instance_id === "string" ? body.instance_id : undefined;
+  // Verify the license key and instance ID match an existing activation
+  const kvKey = `license:${licenseKey}`;
+  const existing = await env.LICENSE_KV.get<KVBinding>(kvKey, "json");
+  if (!existing || existing.instanceId !== instanceId) {
+    return errorResponse("Unauthorized", 403);
+  }
+
   const plan = typeof body.plan === "string" ? body.plan : undefined;
 
   await env.LICENSE_KV.put(
