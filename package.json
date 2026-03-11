@@ -37,12 +37,14 @@
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.52",
+    "@ngrok/ngrok": "^1",
     "dotenv": "^16",
     "grammy": "^1",
-    "@ngrok/ngrok": "^1"
+    "node-cron": "^4.2.1"
   },
   "devDependencies": {
     "@types/node": "^22",
+    "@types/node-cron": "^3.0.11",
     "tsx": "^4",
     "typescript": "^5"
   }

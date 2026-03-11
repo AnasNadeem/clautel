@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import type { BotConfig } from "./store.js";
 import { getLicenseInfo, getPaymentUrl, getCustomerPortalUrl, detectClaudePlan, getPlanLabel, getLicensePlan, getBotLimit } from "./license.js";
 import { escapeHtml } from "./formatter.js";
+import { loadSchedules } from "./scheduler.js";
 
 export interface ManagerCallbacks {
   startWorker: (botConfig: BotConfig) => Promise<void>;
@@ -134,6 +135,28 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
         `<a href="${getCustomerPortalUrl()}">Payment history, invoices &amp; cancellation</a>`,
       { parse_mode: "HTML" }
     );
+  });
+
+  bot.command("schedules", async (ctx) => {
+    const allSchedules = loadSchedules();
+    const workers = callbacks.getActiveWorkers();
+
+    if (allSchedules.length === 0) {
+      await ctx.reply("No scheduled tasks across any bots.");
+      return;
+    }
+
+    const lines: string[] = [];
+    for (const [, w] of workers) {
+      const botSchedules = allSchedules.filter((s) => s.botId === w.config.id);
+      if (botSchedules.length === 0) continue;
+      lines.push(`<b>@${escapeHtml(w.config.username)}</b> (${botSchedules.length})`);
+      for (const s of botSchedules) {
+        lines.push(`  • ${escapeHtml(s.humanLabel)} — ${escapeHtml(s.prompt)}`);
+      }
+    }
+
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
   bot.command("cancel", async (ctx) => {

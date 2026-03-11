@@ -8,6 +8,8 @@ import { loadBots, addBot, removeBot } from "./store.js";
 import type { BotConfig } from "./store.js";
 import { DATA_DIR, config } from "./config.js";
 import { TunnelManager } from "./tunnel.js";
+import { ScheduleManager, loadSchedules } from "./scheduler.js";
+import { claudeToTelegram, splitMessage } from "./formatter.js";
 
 import { checkLicenseForStartup, startPeriodicValidation, flushLicenseSync, getPaymentUrl, detectClaudePlan, getPlanLabel } from "./license.js";
 
@@ -15,6 +17,7 @@ const PID_FILE = path.join(DATA_DIR, "daemon.pid");
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60_000; // 5 minutes — grammY handles transient reconnects internally
 
 const activeWorkers = new Map<number, { config: BotConfig; bot: Bot; bridge: ClaudeBridge; tunnelManager: TunnelManager }>();
+let scheduleManager: ScheduleManager;
 const lastWorkerError = new Map<number, number>(); // botId → timestamp of last polling error
 const RESTART_COOLDOWN_MS = 120_000; // wait 2 minutes before restarting a failed worker
 let healthCheckTimer: NodeJS.Timeout | null = null;
@@ -31,6 +34,9 @@ const WORKER_COMMANDS = [
   { command: "help",       description: "Show help" },
   { command: "preview",    description: "Open live preview tunnel to your dev server" },
   { command: "close",      description: "Close active preview tunnel" },
+  { command: "schedule",   description: "Add a scheduled task" },
+  { command: "schedules",  description: "List scheduled tasks" },
+  { command: "unschedule", description: "Remove a scheduled task" },
 ];
 
 const MANAGER_COMMANDS = [
@@ -39,6 +45,7 @@ const MANAGER_COMMANDS = [
   { command: "remove",       description: "Remove a worker bot (or 'all')" },
   { command: "subscribe",    description: "Get a license or upgrade" },
   { command: "subscription", description: "View license, billing & cancel" },
+  { command: "schedules",    description: "View all scheduled tasks across bots" },
   { command: "feedback",     description: "Send feedback or report an issue" },
   { command: "cancel",       description: "Cancel current operation" },
   { command: "help",         description: "Show help" },
@@ -47,7 +54,7 @@ const MANAGER_COMMANDS = [
 async function startWorker(botConfig: BotConfig): Promise<void> {
   const bridge = new ClaudeBridge(botConfig.id, botConfig.workingDir, botConfig.username);
   const tunnelManager = new TunnelManager(config.NGROK_AUTH_TOKEN);
-  const bot = createWorker(botConfig, bridge, tunnelManager);
+  const bot = createWorker(botConfig, bridge, tunnelManager, scheduleManager);
 
   await bot.init();
   await bot.api.setMyCommands(WORKER_COMMANDS);
@@ -115,6 +122,39 @@ async function main() {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(PID_FILE, String(process.pid));
 
+  // Initialize schedule manager
+  scheduleManager = new ScheduleManager(async (botId, chatId, prompt, scheduleId) => {
+    const worker = activeWorkers.get(botId);
+    if (!worker) {
+      console.error(`[scheduler] Worker ${botId} not found for schedule ${scheduleId}`);
+      return;
+    }
+    worker.bridge.clearSession(chatId);
+    await worker.bridge.sendMessage(chatId, prompt, {
+      onResult: async (result) => {
+        const text = result.text || "Task completed.";
+        const html = claudeToTelegram(text);
+        const parts = splitMessage(html);
+        for (const part of parts) {
+          try {
+            await worker.bot.api.sendMessage(chatId, `<b>Scheduled task done</b>\n\n${part}`, { parse_mode: "HTML" });
+          } catch {
+            await worker.bot.api.sendMessage(chatId, part).catch(() => {});
+          }
+        }
+      },
+      onError: async (err) => {
+        await worker.bot.api.sendMessage(chatId, `Scheduled task failed: ${err.message}`).catch(() => {});
+      },
+      onStreamChunk: () => {},
+      onStatusUpdate: () => {},
+      onToolApproval: async () => "allow",
+      onAskUser: async () => ({}),
+      onPlanApproval: async () => true,
+      onSessionReset: () => {},
+    }, "bypassPermissions");
+  });
+
   // Detect Claude plan
   const { tier } = detectClaudePlan();
   console.log(`Detected Claude plan: ${getPlanLabel(tier)}`);
@@ -156,6 +196,9 @@ async function main() {
       console.error(`Failed to restore worker @${botConfig.username}:`, err);
     }
   }
+
+  // Restore scheduled tasks
+  scheduleManager.start(loadSchedules());
 
   // Periodic health check: restart dead workers and recover saved bots
   healthCheckTimer = setInterval(async () => {
@@ -236,6 +279,7 @@ const shutdown = async () => {
   console.log("\nShutting down...");
   if (licenseTimer) clearInterval(licenseTimer);
   if (healthCheckTimer) clearInterval(healthCheckTimer);
+  scheduleManager?.stop();
   for (const [, worker] of activeWorkers) {
     worker.bridge.abortAll();
     try { await worker.tunnelManager.closeAll(); } catch {}

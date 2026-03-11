@@ -14,6 +14,8 @@ import {
 import type { AskUserQuestion } from "./claude.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
 import { checkLicenseForQuery, getPaymentUrl, detectClaudePlan } from "./license.js";
+import { ScheduleManager, parseScheduleWithClaude, generateScheduleId } from "./scheduler.js";
+import type { Schedule } from "./scheduler.js";
 
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 
@@ -45,7 +47,7 @@ const STREAM_MAX_LEN = 4000;
 const FEEDBACK_FORM_URL = "https://forms.gle/5r3j1uqK4YP7KWSA9";
 const NGROK_SETUP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes to paste ngrok token
 
-export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelManager: TunnelManager): Bot {
+export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelManager: TunnelManager, scheduleManager: ScheduleManager): Bot {
   const bot = new Bot(botConfig.token);
   const tag = botConfig.username;
 
@@ -66,6 +68,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     { resolve: (answer: string) => void; timer: NodeJS.Timeout; question: string; msgId: number }
   >();
   const pendingNgrokSetup = new Map<number, { port: number; timer: NodeJS.Timeout }>();
+  const pendingScheduleConfirm = new Map<number, { schedule: Omit<Schedule, "id" | "createdAt" | "lastRunAt">; timer: NodeJS.Timeout }>();
   let approvalCounter = 0;
   let retryCounter = 0;
 
@@ -249,6 +252,105 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         `<a href="${FEEDBACK_FORM_URL}">Open feedback form</a>`,
       { parse_mode: "HTML" }
     );
+  });
+
+  // --- Schedule commands ---
+
+  const SCHEDULE_CONFIRM_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes to confirm
+
+  bot.command("schedule", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const input = ctx.match?.trim();
+
+    if (!input) {
+      await ctx.reply(
+        "<b>Schedule a recurring task</b>\n\n" +
+          "Send a natural language description, for example:\n" +
+          "<code>/schedule daily 9am run tests and fix any failures</code>\n" +
+          "<code>/schedule every monday write changelog from last week's commits</code>\n" +
+          "<code>/schedule every 6 hours check for new dependency vulnerabilities</code>",
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    await ctx.reply("Parsing schedule...");
+
+    const parsed = await parseScheduleWithClaude(input);
+    if (!parsed) {
+      await ctx.reply("Could not parse schedule. Try being more specific, e.g. <code>/schedule daily 9am run tests</code>", { parse_mode: "HTML" });
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      pendingScheduleConfirm.delete(chatId);
+      bot.api.sendMessage(chatId, "Schedule confirmation timed out. Send /schedule to try again.").catch(() => {});
+    }, SCHEDULE_CONFIRM_TIMEOUT_MS);
+
+    pendingScheduleConfirm.set(chatId, {
+      schedule: {
+        botId: botConfig.id,
+        chatId,
+        prompt: parsed.prompt,
+        cronExpr: parsed.cronExpr,
+        humanLabel: parsed.humanLabel,
+      },
+      timer,
+    });
+
+    const keyboard = new InlineKeyboard()
+      .text("Confirm", `schedule:confirm:${chatId}`)
+      .text("Cancel", `schedule:cancel:${chatId}`);
+
+    await ctx.reply(
+      "<b>Confirm schedule</b>\n\n" +
+        `<b>When:</b> ${escapeHtml(parsed.humanLabel)}\n` +
+        `<b>Task:</b> ${escapeHtml(parsed.prompt)}\n\n` +
+        "<i>Scheduled tasks run automatically without approval prompts.</i>",
+      { parse_mode: "HTML", reply_markup: keyboard }
+    );
+  });
+
+  bot.command("schedules", async (ctx) => {
+    const schedules = scheduleManager.getForBot(botConfig.id);
+    if (schedules.length === 0) {
+      await ctx.reply("No scheduled tasks. Use /schedule to add one.");
+      return;
+    }
+
+    const lines = schedules.map((s, i) => {
+      const lastRun = s.lastRunAt
+        ? `Last run: ${new Date(s.lastRunAt).toLocaleString()}`
+        : "Never run";
+      return `<b>[${i + 1}]</b> ${escapeHtml(s.humanLabel)}\n${escapeHtml(s.prompt)}\n<i>${lastRun}</i>`;
+    });
+
+    await ctx.reply(
+      `<b>Scheduled tasks for ${escapeHtml(repoName)}</b>\n\n` +
+        lines.join("\n\n") +
+        "\n\nUse /unschedule &lt;number&gt; to remove.",
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.command("unschedule", async (ctx) => {
+    const arg = ctx.match?.trim();
+    if (!arg) {
+      await ctx.reply("Usage: <code>/unschedule &lt;number&gt;</code>\n\nUse /schedules to see the list.", { parse_mode: "HTML" });
+      return;
+    }
+
+    const schedules = scheduleManager.getForBot(botConfig.id);
+    const idx = parseInt(arg, 10) - 1;
+
+    if (isNaN(idx) || idx < 0 || idx >= schedules.length) {
+      await ctx.reply(`Invalid number. Use /schedules to see the list.`);
+      return;
+    }
+
+    const schedule = schedules[idx];
+    scheduleManager.remove(schedule.id);
+    await ctx.reply(`Removed: <b>${escapeHtml(schedule.humanLabel)}</b>`, { parse_mode: "HTML" });
   });
 
   // --- Tunnel commands ---
@@ -927,6 +1029,47 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
   // Callback query handler for Approve/Deny, model selection, retry, browser
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
+
+    // Schedule confirm/cancel
+    if (data.startsWith("schedule:confirm:") || data.startsWith("schedule:cancel:")) {
+      const parts = data.split(":");
+      const action = parts[1];
+      const chatId = Number(parts[2]);
+      const pending = pendingScheduleConfirm.get(chatId);
+
+      if (!pending) {
+        await ctx.answerCallbackQuery("Confirmation expired").catch(() => {});
+        return;
+      }
+
+      clearTimeout(pending.timer);
+      pendingScheduleConfirm.delete(chatId);
+
+      if (action === "cancel") {
+        await ctx.editMessageText("Schedule cancelled.").catch(() => {});
+        await ctx.answerCallbackQuery("Cancelled").catch(() => {});
+        return;
+      }
+
+      const schedule: Schedule = {
+        ...pending.schedule,
+        id: generateScheduleId(),
+        createdAt: new Date().toISOString(),
+        lastRunAt: null,
+      };
+
+      scheduleManager.add(schedule);
+
+      await ctx.editMessageText(
+        `<b>Schedule saved</b>\n\n` +
+          `<b>When:</b> ${escapeHtml(schedule.humanLabel)}\n` +
+          `<b>Task:</b> ${escapeHtml(schedule.prompt)}\n\n` +
+          `Use /schedules to view or /unschedule to remove.`,
+        { parse_mode: "HTML" }
+      ).catch(() => {});
+      await ctx.answerCallbackQuery("Schedule saved").catch(() => {});
+      return;
+    }
 
     // Tunnel close
     if (data.startsWith("tunnel:close:")) {
