@@ -704,6 +704,31 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
   return { allowed: false, reason: "Unknown license state." };
 }
 
+// --- Daily Health Check (fire-and-forget) ---
+
+let lastHealthCheckDay: string | null = null;
+
+function sendHealthCheck(state: LicenseState): void {
+  fetch(`${PROXY_BASE_URL}/health-check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      license_key: state.licenseKey,
+      instance_id: state.instanceId,
+      plan: state.plan,
+    }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => {}); // fire-and-forget
+}
+
+function maybeHealthCheck(state: LicenseState): void {
+  const today = new Date().toISOString().slice(0, 10);
+  if (lastHealthCheckDay !== today) {
+    lastHealthCheckDay = today;
+    sendHealthCheck(state);
+  }
+}
+
 // --- Per-Query Check (Fast, In-Memory) ---
 
 export function checkLicenseForQuery(): LicenseCheckResult {
@@ -724,6 +749,9 @@ export function checkLicenseForQuery(): LicenseCheckResult {
       state.plan = claudeTier;
       markDirty();
     }
+
+    maybeHealthCheck(state);
+
     return { allowed: true };
   }
 
@@ -742,6 +770,8 @@ export function checkLicenseForQuery(): LicenseCheckResult {
       invalidateCache();
       return { allowed: false, reason: `License expired.\n\nRenew: ${getPaymentUrl(state.plan)}` };
     }
+
+    maybeHealthCheck(state);
 
     const hoursRemaining = Math.ceil((GRACE_PERIOD_MS - graceElapsed) / (60 * 60 * 1000));
     return {

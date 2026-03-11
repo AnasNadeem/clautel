@@ -239,7 +239,7 @@ export class ClaudeBridge {
   }
 
   getProjectSessionsDir(): string {
-    const projectKey = this.workingDir.replace(/\//g, "-");
+    const projectKey = this.workingDir.replace(/[\\/]/g, "-");
     return path.join(os.homedir(), ".claude", "projects", projectKey);
   }
 

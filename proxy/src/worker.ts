@@ -110,6 +110,8 @@ export default {
         return await handleValidate(body, env);
       } else if (path === "/deactivate") {
         return await handleDeactivate(body, env);
+      } else if (path === "/health-check") {
+        return await handleHealthCheck(body, env);
       }
       return errorResponse("Not found", 404);
     } catch {
@@ -248,6 +250,34 @@ async function handleValidate(body: Record<string, unknown>, env: Env): Promise<
   }
 
   return errorResponse("License server error", 502);
+}
+
+async function handleHealthCheck(body: Record<string, unknown>, env: Env): Promise<Response> {
+  const licenseKey = body.license_key;
+  const instanceId = body.instance_id;
+  if (!licenseKey || typeof licenseKey !== "string" || !instanceId || typeof instanceId !== "string") {
+    return errorResponse("Missing license_key or instance_id", 400);
+  }
+
+  // Verify the license key and instance ID match an existing activation
+  const kvKey = `license:${licenseKey}`;
+  const existing = await env.LICENSE_KV.get<KVBinding>(kvKey, "json");
+  if (!existing || existing.instanceId !== instanceId) {
+    return errorResponse("Unauthorized", 403);
+  }
+
+  const plan = typeof body.plan === "string" ? body.plan : undefined;
+
+  await env.LICENSE_KV.put(
+    `activity:${licenseKey}`,
+    JSON.stringify({
+      lastActiveAt: new Date().toISOString(),
+      plan,
+      instanceId,
+    })
+  );
+
+  return jsonResponse({ ok: true });
 }
 
 async function handleDeactivate(body: Record<string, unknown>, env: Env): Promise<Response> {
