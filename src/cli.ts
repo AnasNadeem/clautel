@@ -80,6 +80,7 @@ function spawnExec(cmd: string, args: string[]): Promise<{ code: number; stderr:
     let stderr = "";
     const child = spawn(cmd, args, {
       stdio: ["ignore", "ignore", "pipe"],
+      ...(process.platform === "win32" && { windowsHide: true }),
     });
     child.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
     child.on("close", (code) => resolve({ code: code ?? 1, stderr }));
@@ -106,6 +107,37 @@ function hasSystemd(): boolean {
 
 function getSystemdServicePath(): string {
   return path.join(os.homedir(), ".config", "systemd", "user", "clautel.service");
+}
+
+// --- Windows startup helpers (Registry Run key + hidden VBS launcher) ---
+const STARTUP_REG_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const STARTUP_REG_VALUE = "Clautel";
+
+function regExec(args: string[]): Promise<{ code: number; stderr: string }> {
+  return spawnExec("reg.exe", args);
+}
+
+function getStartupVbsPath(): string {
+  return path.join(DATA_DIR, "start.vbs");
+}
+
+function getDaemonCmdPath(): string {
+  return path.join(DATA_DIR, "daemon.cmd");
+}
+
+/** Write the .cmd and .vbs launcher files used by both startDirect and auto-start. */
+function ensureWindowsLaunchers(): void {
+  const [cmd, args] = DAEMON_CMD;
+  const cmdLine = `@echo off\r\n"${cmd}" ${args.map((a) => `"${a}"`).join(" ")} >> "${LOG_FILE}" 2>&1\r\n`;
+  fs.writeFileSync(getDaemonCmdPath(), cmdLine);
+
+  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """${getDaemonCmdPath()}""", 0, False\r\n`;
+  fs.writeFileSync(getStartupVbsPath(), vbsContent);
+}
+
+async function hasWindowsStartup(): Promise<boolean> {
+  const { code } = await regExec(["query", STARTUP_REG_KEY, "/v", STARTUP_REG_VALUE]);
+  return code === 0;
 }
 
 /** Poll for daemon PID file + running process. Returns PID or null on timeout. */
@@ -148,13 +180,35 @@ function startDirect(): void {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   rotateLog();
 
+  // On Windows, use VBS launcher to start the daemon fully hidden (no console window).
+  // detached: true + windowsHide: true doesn't reliably hide the window.
+  if (process.platform === "win32") {
+    ensureWindowsLaunchers();
+    const child = spawn("wscript.exe", [getStartupVbsPath()], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    // Daemon writes its own PID file — wait for it
+    console.log("Starting daemon...");
+    waitForDaemon().then((pid) => {
+      if (pid) {
+        console.log(`Started (PID ${pid})`);
+        console.log(`Logs: clautel logs`);
+      } else {
+        console.error("Daemon did not start. Check logs: clautel logs");
+      }
+    });
+    return;
+  }
+
   const logFd = fs.openSync(LOG_FILE, "a");
 
   const [cmd, args] = DAEMON_CMD;
   const child = spawn(cmd, args, {
     detached: true,
     stdio: ["ignore", logFd, logFd],
-    ...(process.platform === "win32" && { windowsHide: true }),
   });
 
   child.on("error", (err) => {
@@ -178,10 +232,34 @@ function startDirect(): void {
 
 async function cmdSetup(): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q: string): Promise<string> =>
-    new Promise((resolve) => rl.question(q, resolve));
+  const ask = (q: string, prefill = ""): Promise<string> =>
+    new Promise((resolve) => {
+      rl.question(q, resolve);
+      if (prefill) rl.write(prefill);
+    });
+
+  // Load existing config for defaults
+  let existing: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      existing = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+    }
+  } catch {}
+  const prevToken = typeof existing.TELEGRAM_BOT_TOKEN === "string" ? existing.TELEGRAM_BOT_TOKEN : "";
+  const prevOwnerId = typeof existing.TELEGRAM_OWNER_ID === "number" ? existing.TELEGRAM_OWNER_ID : 0;
+  const prevNgrok = typeof existing.NGROK_AUTH_TOKEN === "string" ? existing.NGROK_AUTH_TOKEN : "";
+  const prevApiKey = typeof existing.ANTHROPIC_API_KEY === "string" ? existing.ANTHROPIC_API_KEY : "";
+  const prevPlan = typeof existing.claudePlan === "string" ? existing.claudePlan : "";
+
+  // Save config incrementally so partial progress survives crashes
+  const saveConfig = (data: Record<string, unknown>) => {
+    Object.assign(existing, data);
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2), { mode: 0o600 });
+  };
 
   console.log("Clautel — Setup\n");
+  if (prevToken) console.log("  Existing config detected. Edit pre-filled values or press Enter to keep them.\n");
 
   // Step 1/4: Bot token with live validation
   console.log("Step 1/4: Manager Bot");
@@ -190,19 +268,23 @@ async function cmdSetup(): Promise<void> {
 
   let token = "";
   let botUsername = "";
+  let tokenFirstAsk = true;
   while (true) {
-    token = (await ask("  Bot token: ")).trim();
-    if (!token || !/^\d+:[A-Za-z0-9_-]+$/.test(token)) {
+    const input = (await ask("  Bot token: ", tokenFirstAsk ? prevToken : "")).trim();
+    tokenFirstAsk = false;
+
+    if (!input || !/^\d+:[A-Za-z0-9_-]+$/.test(input)) {
       console.log("  Invalid format. Token looks like: 123456:ABC-DEF...\n");
       continue;
     }
     try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      const res = await fetch(`https://api.telegram.org/bot${input}/getMe`);
       const data = (await res.json()) as { ok: boolean; result?: { username: string } };
       if (!data.ok) {
         console.log("  Token rejected by Telegram. Check it and try again.\n");
         continue;
       }
+      token = input;
       botUsername = data.result!.username;
       console.log(`  Connected to @${botUsername}\n`);
       break;
@@ -211,6 +293,7 @@ async function cmdSetup(): Promise<void> {
       continue;
     }
   }
+  saveConfig({ TELEGRAM_BOT_TOKEN: token });
 
   // Step 2/4: Owner Telegram ID
   console.log("Step 2/4: Your Telegram ID");
@@ -220,8 +303,11 @@ async function cmdSetup(): Promise<void> {
   console.log("    2. Send it any message — it replies with your user ID\n");
 
   let ownerId = 0;
+  let ownerFirstAsk = true;
   while (true) {
-    const ownerIdStr = (await ask("  Your Telegram user ID: ")).trim();
+    const ownerIdStr = (await ask("  Your Telegram user ID: ", ownerFirstAsk && prevOwnerId ? String(prevOwnerId) : "")).trim();
+    ownerFirstAsk = false;
+
     ownerId = parseInt(ownerIdStr, 10);
     if (!ownerIdStr || isNaN(ownerId) || ownerId <= 0) {
       console.log("  Invalid ID — must be a positive number.\n");
@@ -230,6 +316,7 @@ async function cmdSetup(): Promise<void> {
     console.log(`  Owner set to ${ownerId}\n`);
     break;
   }
+  saveConfig({ TELEGRAM_OWNER_ID: ownerId });
 
   // Step 3: Ngrok Configuration (optional, for live preview)
   console.log("Step 3/4: Ngrok Configuration (for live preview)");
@@ -237,73 +324,90 @@ async function cmdSetup(): Promise<void> {
   console.log("  Get a free auth token at: https://dashboard.ngrok.com/get-started/your-authtoken");
   console.log("  Press Enter to skip.\n");
 
-  const ngrokToken = (await ask("  Ngrok auth token: ")).trim();
+  const ngrokToken = (await ask("  Ngrok auth token: ", prevNgrok)).trim();
   if (ngrokToken) {
     console.log("  Ngrok token saved.\n");
   } else {
     console.log("  Skipped — you can configure it later via NGROK_AUTH_TOKEN env var or re-run setup.\n");
   }
 
-  // Step 3b: Anthropic API key (optional, needed for launchd service)
-  console.log("  Store your Anthropic API key in config? (needed for launchd auto-start service)");
-  console.log("  If you only use ANTHROPIC_API_KEY env var, press Enter to skip.\n");
+  // Step 3b: Anthropic API key (optional)
+  console.log("  Anthropic API key (optional):");
+  console.log("  If you skip this, Clautel will use your Claude Code CLI login (from 'claude login').");
+  console.log("  Only needed if you want to use an API key instead, or if the auto-start service");
+  console.log("  can't access your CLI login session.");
+  console.log("  Press Enter to skip.\n");
 
-  const anthropicKey = (await ask("  Anthropic API key: ")).trim();
+  const anthropicKey = (await ask("  Anthropic API key: ", prevApiKey)).trim();
   if (anthropicKey) {
     console.log("  API key saved.\n");
   } else {
-    console.log("  Skipped — set ANTHROPIC_API_KEY env var or re-run setup.\n");
+    console.log("  Skipped — will use Claude Code CLI authentication.\n");
   }
 
-  // Write config
-  const configData: Record<string, unknown> = { TELEGRAM_BOT_TOKEN: token, TELEGRAM_OWNER_ID: ownerId };
-  if (ngrokToken) configData.NGROK_AUTH_TOKEN = ngrokToken;
-  if (anthropicKey) configData.ANTHROPIC_API_KEY = anthropicKey;
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(
-    CONFIG_FILE,
-    JSON.stringify(configData, null, 2),
-    { mode: 0o600 }
-  );
+  // Save optional fields
+  if (ngrokToken) saveConfig({ NGROK_AUTH_TOKEN: ngrokToken });
+  else { delete existing.NGROK_AUTH_TOKEN; saveConfig({}); }
+  if (anthropicKey) saveConfig({ ANTHROPIC_API_KEY: anthropicKey });
+  else { delete existing.ANTHROPIC_API_KEY; saveConfig({}); }
 
   // Step 4/4: License
-  const { getPaymentUrl, activateLicense, getPlanLabel, saveClaudePlan } = await import("./license.js");
+  const { getPaymentUrl, activateLicense, getPlanLabel, saveClaudePlan, createSelfHostLicense, saveLicense, loadLicense } = await import("./license.js");
+
+  const existingLicense = loadLicense();
+  const hasActiveLicense = existingLicense.status === "active" && existingLicense.plan !== "selfhost";
 
   console.log("Step 4/4: License\n");
   console.log("  Choose your plan:\n");
+  console.log("    [0] Self-Host — Free");
+  console.log("        Up to 5 project bots, no license key needed\n");
   console.log("    [1] Pro — $4/mo");
   console.log("        Up to 5 project bots\n");
   console.log("    [2] Max — $9/mo (Recommended)");
   console.log("        Unlimited project bots\n");
 
-  let tier: "pro" | "max" = "max";
+  const planPrefill = prevPlan === "max" ? "2" : prevPlan === "pro" ? "1" : "0";
+
+  let tier: "pro" | "max" | "selfhost" = "selfhost";
+  let planFirstAsk = true;
   while (true) {
-    const choice = (await ask("  Select plan (1 or 2): ")).trim();
+    const choice = (await ask("  Select plan (0, 1, or 2): ", planFirstAsk ? planPrefill : "")).trim();
+    planFirstAsk = false;
+    if (choice === "0" || !choice) { tier = "selfhost"; break; }
     if (choice === "1") { tier = "pro"; break; }
-    if (choice === "2" || choice === "") { tier = "max"; break; }
-    console.log("  Please enter 1 or 2.\n");
+    if (choice === "2") { tier = "max"; break; }
+    console.log("  Please enter 0, 1, or 2.\n");
   }
   saveClaudePlan(tier);
 
-  const planLabel = getPlanLabel(tier);
-  console.log(`\n  Selected: ${planLabel}`);
-  console.log(`  Get a license at: ${getPaymentUrl(tier)}`);
-  console.log("  Paste your license key below.\n");
+  if (tier === "selfhost") {
+    const selfHostState = createSelfHostLicense();
+    saveLicense(selfHostState);
+    console.log("\n  Self-host license activated. No key required.\n");
+  } else if (hasActiveLicense && existingLicense.plan === tier) {
+    // Already have an active license for this plan — keep it
+    console.log(`\n  Kept existing ${getPlanLabel(tier)} license.\n`);
+  } else {
+    const planLabel = getPlanLabel(tier);
+    console.log(`\n  Selected: ${planLabel}`);
+    console.log(`  Get a license at: ${getPaymentUrl(tier)}`);
+    console.log("  Paste your license key below.\n");
 
-  while (true) {
-    const licenseKeyInput = (await ask("  License key: ")).trim();
-    if (!licenseKeyInput) {
-      console.log(`  A license key is required. Get one at: ${getPaymentUrl(tier)}\n`);
-      continue;
-    }
-    console.log("  Activating license...");
-    const result = await activateLicense(licenseKeyInput, ownerId, tier);
-    if (result.success) {
-      console.log("  License activated successfully!\n");
-      break;
-    } else {
-      console.log(`  Activation failed: ${result.error}`);
-      console.log("  Check your key and try again.\n");
+    while (true) {
+      const licenseKeyInput = (await ask("  License key: ")).trim();
+      if (!licenseKeyInput) {
+        console.log(`  A license key is required. Get one at: ${getPaymentUrl(tier)}\n`);
+        continue;
+      }
+      console.log("  Activating license...");
+      const result = await activateLicense(licenseKeyInput, ownerId, tier);
+      if (result.success) {
+        console.log("  License activated successfully!\n");
+        break;
+      } else {
+        console.log(`  Activation failed: ${result.error}`);
+        console.log("  Check your key and try again.\n");
+      }
     }
   }
   rl.close();
@@ -315,7 +419,7 @@ async function cmdSetup(): Promise<void> {
   console.log("  License: Active");
 
   // Auto-install service on macOS (launchd) and Linux (systemd) for startup persistence
-  if (process.platform === "darwin" || (process.platform === "linux" && hasSystemd())) {
+  if (process.platform === "darwin" || (process.platform === "linux" && hasSystemd()) || process.platform === "win32") {
     console.log("\nInstalling auto-start service...");
     await cmdInstallService();
   } else {
@@ -421,6 +525,19 @@ async function cmdStart(): Promise<void> {
   if (process.platform === "linux" && hasSystemd()) {
     console.log("Installing auto-start service...");
     await cmdInstallService();
+    return;
+  }
+
+  // On Windows without startup entry, install it first
+  if (process.platform === "win32" && !await hasWindowsStartup()) {
+    console.log("Installing auto-start service...");
+    await cmdInstallService();
+    return;
+  }
+
+  // On Windows with startup entry, just start directly
+  if (process.platform === "win32") {
+    startDirect();
     return;
   }
 
@@ -541,8 +658,8 @@ function getPlistPath(): string {
 }
 
 async function cmdInstallService(): Promise<void> {
-  if (process.platform !== "darwin" && process.platform !== "linux") {
-    console.error("install-service is supported on macOS (launchd) and Linux (systemd).");
+  if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") {
+    console.error("install-service is supported on macOS (launchd), Linux (systemd), and Windows.");
     process.exit(1);
   }
 
@@ -566,6 +683,8 @@ async function cmdInstallService(): Promise<void> {
 
   if (process.platform === "darwin") {
     await installLaunchdService();
+  } else if (process.platform === "win32") {
+    await installWindowsStartup();
   } else {
     await installSystemdService();
   }
@@ -718,6 +837,28 @@ WantedBy=default.target
   }
 }
 
+async function installWindowsStartup(): Promise<void> {
+  ensureWindowsLaunchers();
+
+  // Add to Windows startup via Registry Run key (no admin needed)
+  const regData = `wscript.exe "${getStartupVbsPath()}"`;
+  const { code, stderr } = await regExec([
+    "add", STARTUP_REG_KEY, "/v", STARTUP_REG_VALUE,
+    "/t", "REG_SZ", "/d", regData, "/f",
+  ]);
+
+  if (code !== 0) {
+    console.error(`Registry: ${stderr.trim() || `exit code ${code}`}`);
+    console.log("Starting daemon directly instead...");
+    startDirect();
+    return;
+  }
+
+  // Start the daemon now
+  startDirect();
+  console.log("Auto-start registered. The daemon will start at login.");
+}
+
 async function cmdUninstallService(): Promise<void> {
   if (process.platform === "darwin") {
     if (!fs.existsSync(getPlistPath())) {
@@ -743,7 +884,20 @@ async function cmdUninstallService(): Promise<void> {
     return;
   }
 
-  console.error("install-service is supported on macOS (launchd) and Linux (systemd).");
+  if (process.platform === "win32") {
+    if (!await hasWindowsStartup()) {
+      console.log("Service not installed.");
+      return;
+    }
+    await regExec(["delete", STARTUP_REG_KEY, "/v", STARTUP_REG_VALUE, "/f"]);
+    fs.rmSync(getStartupVbsPath(), { force: true });
+    fs.rmSync(getDaemonCmdPath(), { force: true });
+    fs.rmSync(PID_FILE, { force: true });
+    console.log("Service uninstalled.");
+    return;
+  }
+
+  console.error("install-service is supported on macOS (launchd), Linux (systemd), and Windows (Registry startup).");
   process.exit(1);
 }
 
@@ -898,7 +1052,7 @@ Commands:
   deactivate         Deactivate this machine's license
   license            Show current license status
   recheck            Force re-validate license with server (fixes false expired)
-  install-service    Install as a system service (macOS launchd / Linux systemd)
+  install-service    Install as a system service (macOS / Linux / Windows)
   uninstall-service  Remove the system service
   help               Show this help message
 

@@ -20,19 +20,21 @@ const ED25519_PUBLIC_KEY_HEX = "69f4a24c0a6746e9d9db0d074d7f218da76776ffc2589195
 const SIGNED_TOKEN_FILE = path.join(DATA_DIR, "signed-token.json");
 const TOKEN_OFFLINE_MAX_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-export type PlanTier = "pro" | "max";
+export type PlanTier = "pro" | "max" | "selfhost";
 
 const PAYMENT_PRODUCTS: Record<PlanTier, string> = {
+  selfhost: "",
   pro: "pdt_0NZ6rPbGSyjuJsUJKmXaY",
   max: "pdt_0NZ6rUPAClxiXuf21uJYO",
 };
 
 const PLAN_LABELS: Record<PlanTier, string> = {
+  selfhost: "Self-Host (Free)",
   pro: "Pro ($4/mo)",
   max: "Max ($9/mo)",
 };
 
-const PLAN_ORDER: Record<PlanTier, number> = { pro: 0, max: 1 };
+const PLAN_ORDER: Record<PlanTier, number> = { selfhost: -1, pro: 0, max: 1 };
 
 const LICENSE_FILE = path.join(DATA_DIR, "license.json");
 const INTEGRITY_KEY_FILE = path.join(DATA_DIR, ".integrity-key");
@@ -182,7 +184,7 @@ export function getCustomerPortalUrl(): string {
   return `${DODO_CUSTOMER_URL}`;
 }
 
-const BOT_LIMITS: Record<PlanTier, number> = { pro: 5, max: Infinity };
+const BOT_LIMITS: Record<PlanTier, number> = { selfhost: 5, pro: 5, max: Infinity };
 
 export function getBotLimit(plan: PlanTier): number {
   return BOT_LIMITS[plan];
@@ -213,6 +215,21 @@ export function generateInstanceName(ownerId?: number): string {
 }
 
 // --- State I/O ---
+
+export function createSelfHostLicense(): LicenseState {
+  const state: Omit<LicenseState, "checksum"> = {
+    licenseKey: "selfhost",
+    instanceId: "selfhost",
+    status: "active",
+    plan: "selfhost",
+    lastValidatedAt: new Date().toISOString(),
+    lastValidationResult: true,
+    graceStartedAt: null,
+    warningsSent: 0,
+    formatVersion: undefined,
+  };
+  return { ...state, checksum: computeChecksum(state) };
+}
 
 export function defaultLicenseState(): LicenseState {
   const state: Omit<LicenseState, "checksum"> = {
@@ -593,6 +610,11 @@ export async function checkLicenseForStartup(): Promise<LicenseCheckResult> {
   invalidateCache();
   const state = getCachedLicense();
 
+  // Self-host plan: always allowed, no remote validation
+  if (state.plan === "selfhost") {
+    return { allowed: true };
+  }
+
   // Expired — try one server check before blocking (covers renewal gaps / transient blips)
   if (state.status === "expired") {
     if (state.licenseKey && state.instanceId) {
@@ -734,6 +756,11 @@ function maybeHealthCheck(state: LicenseState): void {
 export function checkLicenseForQuery(): LicenseCheckResult {
   const state = getCachedLicense();
 
+  // Self-host plan: always allowed, no remote validation
+  if (state.plan === "selfhost") {
+    return { allowed: true };
+  }
+
   if (state.status === "active") {
     // Plan enforcement: sync license plan with Claude subscription
     const { tier: claudeTier } = detectClaudePlan();
@@ -789,6 +816,8 @@ export function checkLicenseForQuery(): LicenseCheckResult {
 export function startPeriodicValidation(): NodeJS.Timeout {
   return setInterval(async () => {
     const state = getCachedLicense();
+    // Self-host plan: skip remote validation
+    if (state.plan === "selfhost") return;
     if (state.status !== "active" && state.status !== "grace") return;
 
     const result = await validateLicense(state);
@@ -825,6 +854,10 @@ export function startPeriodicValidation(): NodeJS.Timeout {
 
 export function getLicenseInfo(): string {
   const state = getCachedLicense();
+
+  if (state.plan === "selfhost") {
+    return `Status: Active\nPlan: ${getPlanLabel(state.plan)}\nLicense: Self-hosted (no key required)`;
+  }
 
   if (state.status === "active") {
     const lastValidated = state.lastValidatedAt

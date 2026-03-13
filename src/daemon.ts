@@ -294,6 +294,7 @@ const shutdown = async () => {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+if (process.platform === "win32") process.on("SIGBREAK", shutdown);
 
 main().catch(async (err) => {
   console.error("Fatal error:", err);

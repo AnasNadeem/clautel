@@ -13,7 +13,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc && chmod +x dist/cli.js",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"try{require('fs').chmodSync('dist/cli.js',0o755)}catch{}\"",
     "start": "tsx src/daemon.ts",
     "dev": "tsx watch src/daemon.ts",
     "cli": "tsx src/cli.ts",

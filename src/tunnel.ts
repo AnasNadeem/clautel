@@ -1,12 +1,9 @@
-import ngrok from "@ngrok/ngrok";
-import type { Listener } from "@ngrok/ngrok";
-
 const AUTO_CLOSE_MS = 30 * 60 * 1000; // 30 minutes
 
 interface TunnelEntry {
   url: string;
   port: number;
-  listener: Listener;
+  listener: { url(): string | null | undefined; close(): Promise<void> };
   timer: NodeJS.Timeout;
 }
 
@@ -45,6 +42,10 @@ export class TunnelManager {
     // Close existing tunnel for this chat
     await this.closeTunnel(chatId);
 
+    // Lazy-load ngrok to avoid loading the native binary at startup.
+    // This prevents crashes on systems where Application Control policies
+    // block the native module, as long as tunnels aren't used.
+    const ngrok = await import("@ngrok/ngrok");
     const listener = await ngrok.forward({
       addr: port,
       authtoken: this.authToken,
