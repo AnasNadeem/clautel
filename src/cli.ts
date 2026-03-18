@@ -244,21 +244,9 @@ async function cmdSetup(): Promise<void> {
     console.log("  Skipped — you can configure it later via NGROK_AUTH_TOKEN env var or re-run setup.\n");
   }
 
-  // Step 3b: Anthropic API key (optional, needed for launchd service)
-  console.log("  Store your Anthropic API key in config? (needed for launchd auto-start service)");
-  console.log("  If you only use ANTHROPIC_API_KEY env var, press Enter to skip.\n");
-
-  const anthropicKey = (await ask("  Anthropic API key: ")).trim();
-  if (anthropicKey) {
-    console.log("  API key saved.\n");
-  } else {
-    console.log("  Skipped — set ANTHROPIC_API_KEY env var or re-run setup.\n");
-  }
-
   // Write config
   const configData: Record<string, unknown> = { TELEGRAM_BOT_TOKEN: token, TELEGRAM_OWNER_ID: ownerId };
   if (ngrokToken) configData.NGROK_AUTH_TOKEN = ngrokToken;
-  if (anthropicKey) configData.ANTHROPIC_API_KEY = anthropicKey;
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     CONFIG_FILE,
