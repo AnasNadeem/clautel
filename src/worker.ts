@@ -126,7 +126,25 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     console.error(`[${tag}] Bot error:`, err.message);
   });
 
-  // Auth guard — private: owner-only; group: Max plan only
+  // Cache owner-in-group check to avoid hitting Telegram API on every message
+  const ownerInGroupCache = new Map<number, { result: boolean; checkedAt: number }>();
+  const OWNER_CHECK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+  async function isOwnerInGroup(chatId: number): Promise<boolean> {
+    const cached = ownerInGroupCache.get(chatId);
+    if (cached && Date.now() - cached.checkedAt < OWNER_CHECK_TTL_MS) return cached.result;
+    try {
+      const member = await bot.api.getChatMember(chatId, config.TELEGRAM_OWNER_ID);
+      const result = ["creator", "administrator", "member"].includes(member.status);
+      ownerInGroupCache.set(chatId, { result, checkedAt: Date.now() });
+      return result;
+    } catch {
+      ownerInGroupCache.set(chatId, { result: false, checkedAt: Date.now() });
+      return false;
+    }
+  }
+
+  // Auth guard — private: owner-only; group: Max plan + owner must be in group
   bot.use(async (ctx, next) => {
     const chatType = ctx.chat?.type;
     if (chatType === "private") {
@@ -136,8 +154,10 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
       }
     } else if (chatType === "group" || chatType === "supergroup") {
       if (getLicensePlan() !== "max") {
-        // Only Max plan supports group chats — silently ignore
-        return;
+        return; // Only Max plan supports group chats — silently ignore
+      }
+      if (!await isOwnerInGroup(ctx.chat!.id)) {
+        return; // Owner not in this group — silently ignore
       }
     } else {
       return; // channels, unknown — silently ignore
@@ -174,6 +194,10 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     "• Send documents (PDF, code files, etc.) for analysis\n" +
     "• Reply to any Claude message to include it as context\n" +
     "• Tap Retry on errors to re-run the last prompt\n\n" +
+    "<b>Group Chat (Max plan):</b>\n" +
+    "• Add this bot to a group where you're a member\n" +
+    "• Everyone in the group can send prompts to Claude\n" +
+    "• Messages are tagged with the sender's name for context\n\n" +
     "<b>Tips:</b>\n" +
     "• Send a photo with a caption to ask about images\n" +
     "• Claude can read, edit, and create files in your project\n" +
