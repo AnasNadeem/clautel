@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, Context } from "grammy";
 import { config, DATA_DIR } from "./config.js";
 import { ClaudeBridge, AVAILABLE_MODELS } from "./claude.js";
 import type { BotConfig } from "./store.js";
@@ -145,7 +145,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     await next();
   });
 
-  function getSenderTag(ctx: { from?: { username?: string; first_name?: string; id: number }; chat?: { type: string } }): string | undefined {
+  function getSenderTag(ctx: Context): string | undefined {
     if (ctx.chat?.type === "private") return undefined;
     const from = ctx.from;
     if (!from) return undefined;
@@ -919,7 +919,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
       // Drain queue — process next message if any
       const nextItem = dequeueMessage(chatId);
       if (nextItem) {
-        setTimeout(() => handlePrompt(chatId, nextItem.prompt, nextItem.replyFn, nextItem.senderTag), 500);
+        handlePrompt(chatId, nextItem.prompt, nextItem.replyFn, nextItem.senderTag);
       }
     })().catch((err) => {
       console.error(`[${tag}] handlePrompt error:`, err);
