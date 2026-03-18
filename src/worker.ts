@@ -13,7 +13,7 @@ import {
 } from "./formatter.js";
 import type { AskUserQuestion } from "./claude.js";
 import { logUser, logStream, logResult, logError } from "./log.js";
-import { checkLicenseForQuery, getPaymentUrl, detectClaudePlan } from "./license.js";
+import { checkLicenseForQuery, getPaymentUrl, detectClaudePlan, getLicensePlan } from "./license.js";
 import { ScheduleManager, parseScheduleWithClaude, generateScheduleId } from "./scheduler.js";
 import type { Schedule } from "./scheduler.js";
 
@@ -72,6 +72,42 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
   let approvalCounter = 0;
   let retryCounter = 0;
 
+  // Message queue for handling concurrent requests
+  interface QueuedMessage {
+    prompt: string;
+    replyFn: (text: string) => Promise<{ message_id: number }>;
+    senderTag?: string;
+  }
+
+  const messageQueues = new Map<number, QueuedMessage[]>();
+  const MAX_QUEUE_SIZE = 20;
+
+  function enqueueMessage(chatId: number, item: QueuedMessage): number {
+    let queue = messageQueues.get(chatId);
+    if (!queue) {
+      queue = [];
+      messageQueues.set(chatId, queue);
+    }
+    queue.push(item);
+    return queue.length;
+  }
+
+  function dequeueMessage(chatId: number): QueuedMessage | undefined {
+    const queue = messageQueues.get(chatId);
+    if (!queue || queue.length === 0) return undefined;
+    const item = queue.shift()!;
+    if (queue.length === 0) messageQueues.delete(chatId);
+    return item;
+  }
+
+  function clearQueue(chatId: number): number {
+    const queue = messageQueues.get(chatId);
+    if (!queue) return 0;
+    const count = queue.length;
+    messageQueues.delete(chatId);
+    return count;
+  }
+
   function saveNgrokToken(token: string): void {
     let existing: Record<string, unknown> = {};
     try {
@@ -90,14 +126,31 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     console.error(`[${tag}] Bot error:`, err.message);
   });
 
-  // Owner-only guard
+  // Auth guard — private: owner-only; group: Max plan only
   bot.use(async (ctx, next) => {
-    if (ctx.from?.id !== config.TELEGRAM_OWNER_ID) {
-      await ctx.reply("Unauthorized.");
-      return;
+    const chatType = ctx.chat?.type;
+    if (chatType === "private") {
+      if (ctx.from?.id !== config.TELEGRAM_OWNER_ID) {
+        await ctx.reply("Unauthorized.");
+        return;
+      }
+    } else if (chatType === "group" || chatType === "supergroup") {
+      if (getLicensePlan() !== "max") {
+        // Only Max plan supports group chats — silently ignore
+        return;
+      }
+    } else {
+      return; // channels, unknown — silently ignore
     }
     await next();
   });
+
+  function getSenderTag(ctx: { from?: { username?: string; first_name?: string; id: number }; chat?: { type: string } }): string | undefined {
+    if (ctx.chat?.type === "private") return undefined;
+    const from = ctx.from;
+    if (!from) return undefined;
+    return from.username ? `@${from.username}` : (from.first_name || `user:${from.id}`);
+  }
 
   const repoName = path.basename(botConfig.workingDir);
 
@@ -140,8 +193,10 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     if (bridge.isProcessing(chatId)) {
       bridge.cancelQuery(chatId);
     }
+    const queueCleared = clearQueue(chatId);
     bridge.clearSession(chatId);
-    await ctx.reply("Session cleared. Send a message to start fresh.");
+    const extra = queueCleared > 0 ? ` ${queueCleared} queued message(s) discarded.` : "";
+    await ctx.reply(`Session cleared.${extra} Send a message to start fresh.`);
   });
 
   bot.command("cost", async (ctx) => {
@@ -176,8 +231,14 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
   });
 
   bot.command("cancel", async (ctx) => {
-    if (bridge.cancelQuery(ctx.chat.id)) {
-      await ctx.reply("Operation cancelled.");
+    const chatId = ctx.chat.id;
+    const wasProcessing = bridge.cancelQuery(chatId);
+    const queueCleared = clearQueue(chatId);
+    if (wasProcessing || queueCleared > 0) {
+      const parts: string[] = [];
+      if (wasProcessing) parts.push("Operation cancelled");
+      if (queueCleared > 0) parts.push(`${queueCleared} queued message(s) discarded`);
+      await ctx.reply(parts.join(". ") + ".");
     } else {
       await ctx.reply("Nothing running to cancel.");
     }
@@ -427,7 +488,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     }
   });
 
-  function handlePrompt(chatId: number, prompt: string, replyFn: (text: string) => Promise<{ message_id: number }>) {
+  function handlePrompt(chatId: number, prompt: string, replyFn: (text: string) => Promise<{ message_id: number }>, senderTag?: string) {
     (async () => {
       // License check — gate every query
       const licenseCheck = checkLicenseForQuery();
@@ -441,14 +502,18 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
       }
 
       if (bridge.isProcessing(chatId)) {
-        await bot.api.sendMessage(chatId, "Claude is busy with a running task. Use /cancel to stop it first.");
+        const queue = messageQueues.get(chatId);
+        if (queue && queue.length >= MAX_QUEUE_SIZE) {
+          await bot.api.sendMessage(chatId, "Queue full — please wait for current tasks to finish.");
+          return;
+        }
+        const position = enqueueMessage(chatId, { prompt, replyFn, senderTag });
+        await bot.api.sendMessage(chatId, `Queued (position #${position}). Will process when current task finishes.`);
         return;
       }
 
-      if (bridge.isCoolingDown(chatId)) {
-        await bot.api.sendMessage(chatId, "Slow down — wait a moment before sending again.");
-        return;
-      }
+      // Apply sender attribution for group chats
+      const effectivePrompt = senderTag ? `[from ${senderTag}]: ${prompt}` : prompt;
 
       bridge.setLastPrompt(chatId, prompt);
 
@@ -821,7 +886,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         }
       };
 
-      await bridge.sendMessage(chatId, prompt, {
+      await bridge.sendMessage(chatId, effectivePrompt, {
         onStreamChunk,
         onStatusUpdate,
         onToolApproval,
@@ -849,6 +914,12 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
             await bot.api.editMessageText(chatId, thinkingMsgId, "Cancelled.").catch(() => {});
           }
         }
+      }
+
+      // Drain queue — process next message if any
+      const nextItem = dequeueMessage(chatId);
+      if (nextItem) {
+        setTimeout(() => handlePrompt(chatId, nextItem.prompt, nextItem.replyFn, nextItem.senderTag), 500);
       }
     })().catch((err) => {
       console.error(`[${tag}] handlePrompt error:`, err);
@@ -937,16 +1008,11 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     const replyCtx = extractReplyContext(ctx);
     const prompt = replyCtx + ctx.message.text;
     logUser(ctx.message.text, tag);
-    handlePrompt(chatId, prompt, (text) => ctx.reply(text));
+    handlePrompt(chatId, prompt, (text) => ctx.reply(text), getSenderTag(ctx));
   });
 
   bot.on("message:document", async (ctx) => {
     const chatId = ctx.chat.id;
-
-    if (bridge.isProcessing(chatId)) {
-      await ctx.reply("Already processing a request. Use /cancel to abort.");
-      return;
-    }
 
     const doc = ctx.message.document;
     if (doc.file_size && doc.file_size > MAX_DOWNLOAD_BYTES) {
@@ -980,16 +1046,11 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     const replyCtx = extractReplyContext(ctx);
     const prompt = replyCtx + `I've sent you a file saved at ${tmpFile}\n\nPlease read that file, then respond to this: ${caption}`;
 
-    handlePrompt(chatId, prompt, (text) => ctx.reply(text));
+    handlePrompt(chatId, prompt, (text) => ctx.reply(text), getSenderTag(ctx));
   });
 
   bot.on("message:photo", async (ctx) => {
     const chatId = ctx.chat.id;
-
-    if (bridge.isProcessing(chatId)) {
-      await ctx.reply("Already processing a request. Use /cancel to abort.");
-      return;
-    }
 
     const photos = ctx.message.photo;
     const photo = photos[photos.length - 1];
@@ -1023,7 +1084,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     const replyCtx = extractReplyContext(ctx);
     const prompt = replyCtx + `I've sent you an image saved at ${tmpFile}\n\nPlease read/view that image file, then respond to this: ${caption}`;
 
-    handlePrompt(chatId, prompt, (text) => ctx.reply(text));
+    handlePrompt(chatId, prompt, (text) => ctx.reply(text), getSenderTag(ctx));
   });
 
   // Callback query handler for Approve/Deny, model selection, retry, browser

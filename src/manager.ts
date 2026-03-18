@@ -117,7 +117,8 @@ export function createManager(callbacks: ManagerCallbacks): Bot {
         "<b>Pro</b> — $4/mo\n" +
         "• Up to 5 project bots\n\n" +
         "<b>Max</b> — $9/mo\n" +
-        "• Unlimited project bots\n\n" +
+        "• Unlimited project bots\n" +
+        "• Group chat support\n\n" +
         `<a href="${getPaymentUrl("pro")}">Get Pro</a>  |  <a href="${getPaymentUrl("max")}">Get Max</a>\n\n` +
         "After purchase you'll receive a license key via email.\n" +
         "Activate it with:\n" +
