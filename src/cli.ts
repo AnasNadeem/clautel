@@ -15,8 +15,10 @@ const LOG_KEEP_COUNT = 3; // keep app.log.1, app.log.2, app.log.3
 
 const LAUNCHD_LABEL = "com.clautel.daemon";
 
-// Resolve daemon path: prefer compiled dist/daemon.js, fall back to tsx for local dev
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PKG_VERSION: string = (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8")).version; } catch { return "unknown"; } })();
+
+// Resolve daemon path: prefer compiled dist/daemon.js, fall back to tsx for local dev
 const compiledDaemon = path.join(__dirname, "daemon.js");
 const srcDaemon = path.join(__dirname, "../src/daemon.ts");
 
@@ -888,6 +890,7 @@ Commands:
   recheck            Force re-validate license with server (fixes false expired)
   install-service    Install as a system service (macOS launchd / Linux systemd)
   uninstall-service  Remove the system service
+  version            Show Clautel version
   help               Show this help message
 
 Getting started:
@@ -933,6 +936,11 @@ switch (command) {
     break;
   case "uninstall-service":
     cmdUninstallService().catch((err) => { console.error(err); process.exit(1); });
+    break;
+  case "version":
+  case "--version":
+  case "-v":
+    console.log(`Clautel v${PKG_VERSION}`);
     break;
   default:
     cmdHelp();
