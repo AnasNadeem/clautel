@@ -166,6 +166,7 @@ export class ClaudeBridge {
   private lastQueryEnd = new Map<number, number>();
   private lastPrompts = new Map<number, string>();
   private sessionApprovedTools = new Map<number, Set<string>>();
+  private yoloChats = new Set<number>();
   // Strip CLAUDECODE env var once so SDK subprocesses don't refuse to start
   // when the daemon is launched from within a Claude Code session.
   private readonly cleanEnv: Record<string, string | undefined>;
@@ -236,7 +237,20 @@ export class ClaudeBridge {
     this.sessions.delete(chatId);
     this.sessionTokens.delete(chatId);
     this.sessionApprovedTools.delete(chatId);
+    this.yoloChats.delete(chatId);
     this.saveState();
+  }
+
+  setYolo(chatId: number, enabled: boolean): void {
+    if (enabled) {
+      this.yoloChats.add(chatId);
+    } else {
+      this.yoloChats.delete(chatId);
+    }
+  }
+
+  isYolo(chatId: number): boolean {
+    return this.yoloChats.has(chatId);
   }
 
   setModel(chatId: number, modelId: string): void {

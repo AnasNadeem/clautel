@@ -186,6 +186,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     "/cost — Show token usage for the current session\n" +
     "/session — Get session ID to continue in CLI\n" +
     "/resume — Resume a CLI session in Telegram\n" +
+    "/yolo — Toggle skip-permissions mode (no approval prompts)\n" +
     "/cancel — Abort the current operation\n" +
     "/feedback — Send feedback or report an issue\n" +
     "/help — Show this help message\n\n" +
@@ -267,6 +268,26 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
       await ctx.reply(parts.join(". ") + ".");
     } else {
       await ctx.reply("Nothing running to cancel.");
+    }
+  });
+
+  bot.command("yolo", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const enabling = !bridge.isYolo(chatId);
+    bridge.setYolo(chatId, enabling);
+    if (enabling) {
+      await ctx.reply(
+        "\u26a0\ufe0f <b>YOLO mode ON</b>\n\n" +
+          "All tools will run <b>without approval</b>. " +
+          "Claude can execute any command, edit any file, and access the network without asking.\n\n" +
+          "Use /yolo again to disable.",
+        { parse_mode: "HTML" }
+      );
+    } else {
+      await ctx.reply(
+        "\u2705 <b>YOLO mode OFF</b>\n\nTools will require approval again.",
+        { parse_mode: "HTML" }
+      );
     }
   });
 
@@ -923,7 +944,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         onSessionReset: () => {
           bot.api.sendMessage(chatId, "Previous session not found. Starting a fresh session.").catch(() => {});
         },
-      });
+      }, bridge.isYolo(chatId) ? "bypassPermissions" : "default");
 
       // Runs if cancelled (onResult/onError were never called)
       if (!responseHandled) {
