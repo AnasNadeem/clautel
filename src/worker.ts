@@ -200,6 +200,8 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     "• Add this bot to a group where you're a member\n" +
     "• Everyone in the group can send prompts to Claude\n" +
     "• Messages are tagged with the sender's name for context\n\n" +
+    "<b>Advanced:</b>\n" +
+    "/yolo — Toggle skip-permissions mode (no approval prompts)\n\n" +
     "<b>Tips:</b>\n" +
     "• Send a photo with a caption to ask about images\n" +
     "• Claude can read, edit, and create files in your project\n" +
@@ -267,6 +269,28 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
       await ctx.reply(parts.join(". ") + ".");
     } else {
       await ctx.reply("Nothing running to cancel.");
+    }
+  });
+
+  bot.command("yolo", async (ctx) => {
+    // Only the owner can toggle yolo mode (especially important in group chats)
+    if (ctx.from?.id !== config.TELEGRAM_OWNER_ID) return;
+    const chatId = ctx.chat.id;
+    const enabling = !bridge.isYolo(chatId);
+    bridge.setYolo(chatId, enabling);
+    if (enabling) {
+      await ctx.reply(
+        "\u26a0\ufe0f <b>YOLO mode ON</b>\n\n" +
+          "All tools will run <b>without approval</b>. " +
+          "Claude can execute any command, edit any file, and access the network without asking.\n\n" +
+          "Use /yolo again to disable.",
+        { parse_mode: "HTML" }
+      );
+    } else {
+      await ctx.reply(
+        "\u2705 <b>YOLO mode OFF</b>\n\nTools will require approval again.",
+        { parse_mode: "HTML" }
+      );
     }
   });
 
@@ -923,7 +947,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
         onSessionReset: () => {
           bot.api.sendMessage(chatId, "Previous session not found. Starting a fresh session.").catch(() => {});
         },
-      });
+      }, bridge.isYolo(chatId) ? "bypassPermissions" : "default");
 
       // Runs if cancelled (onResult/onError were never called)
       if (!responseHandled) {
