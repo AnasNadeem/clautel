@@ -128,11 +128,13 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
 
   // Cache owner-in-group check to avoid hitting Telegram API on every message
   const ownerInGroupCache = new Map<number, { result: boolean; checkedAt: number }>();
-  const OWNER_CHECK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  const OWNER_CHECK_TTL_MS = 5 * 60 * 1000; // 5 minutes for positive results
+  const OWNER_CHECK_NEG_TTL_MS = 30 * 1000; // 30 seconds for negative results (owner may rejoin)
 
   async function isOwnerInGroup(chatId: number): Promise<boolean> {
     const cached = ownerInGroupCache.get(chatId);
-    if (cached && Date.now() - cached.checkedAt < OWNER_CHECK_TTL_MS) return cached.result;
+    const ttl = cached?.result ? OWNER_CHECK_TTL_MS : OWNER_CHECK_NEG_TTL_MS;
+    if (cached && Date.now() - cached.checkedAt < ttl) return cached.result;
     try {
       const member = await bot.api.getChatMember(chatId, config.TELEGRAM_OWNER_ID);
       const result = ["creator", "administrator", "member"].includes(member.status);
