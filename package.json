@@ -1,6 +1,6 @@
 {
   "name": "clautel",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Telegram bridge for Claude Code - use Claude from your phone",
   "type": "module",
   "bin": {

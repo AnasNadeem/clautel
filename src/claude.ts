@@ -175,7 +175,29 @@ export class ClaudeBridge {
     this.workingDir = workingDir;
     this.tag = tag;
     this.stateFile = path.join(config.DATA_DIR, `state-${botId}.json`);
-    const { CLAUDECODE: _, ...cleanEnv } = process.env;
+    // Strip CLAUDECODE so SDK subprocesses don't refuse to start,
+    // and strip ANTHROPIC_API_KEY so stale keys from .env files or
+    // shell env don't override the user's working Claude Code CLI auth.
+    // If explicitly configured in our config, re-add it.
+    const { CLAUDECODE: _, ANTHROPIC_API_KEY: __, ...cleanEnv } = process.env;
+    if (config.ANTHROPIC_API_KEY) {
+      cleanEnv.ANTHROPIC_API_KEY = config.ANTHROPIC_API_KEY;
+    }
+    // Forward env vars from Claude Code's settings.json (e.g. ANTHROPIC_BASE_URL
+    // for users behind proxies). Only set if not already in process.env.
+    try {
+      const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+      if (fs.existsSync(settingsPath)) {
+        const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+        if (settings.env && typeof settings.env === "object") {
+          for (const [key, value] of Object.entries(settings.env)) {
+            if (typeof value === "string" && !cleanEnv[key]) {
+              cleanEnv[key] = value;
+            }
+          }
+        }
+      }
+    } catch {}
     this.cleanEnv = cleanEnv;
     this.loadState();
   }
@@ -637,8 +659,15 @@ export class ClaudeBridge {
             });
             this.saveState();
 
+            let resultText = msg.result as string || "";
+
+            // Detect Claude API auth failures and provide actionable guidance
+            if (resultText.includes("API Error: 403") || resultText.includes("Failed to authenticate")) {
+              resultText = "Claude Code authentication failed.\n\nTo fix, run these commands on your server:\n1. claude login\n2. clautel stop && clautel start\n\nIf that doesn't work, update Claude Code:\n  npm install -g @anthropic-ai/claude-code@latest";
+            }
+
             callbacks.onResult({
-              text: msg.result as string || "",
+              text: resultText,
               usage,
               turns: msg.num_turns as number || 0,
               durationMs: msg.duration_ms as number || 0,
