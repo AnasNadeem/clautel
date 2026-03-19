@@ -186,7 +186,6 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     "/cost — Show token usage for the current session\n" +
     "/session — Get session ID to continue in CLI\n" +
     "/resume — Resume a CLI session in Telegram\n" +
-    "/yolo — Toggle skip-permissions mode (no approval prompts)\n" +
     "/cancel — Abort the current operation\n" +
     "/feedback — Send feedback or report an issue\n" +
     "/help — Show this help message\n\n" +
@@ -201,6 +200,8 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     "• Add this bot to a group where you're a member\n" +
     "• Everyone in the group can send prompts to Claude\n" +
     "• Messages are tagged with the sender's name for context\n\n" +
+    "<b>Advanced:</b>\n" +
+    "/yolo — Toggle skip-permissions mode (no approval prompts)\n\n" +
     "<b>Tips:</b>\n" +
     "• Send a photo with a caption to ask about images\n" +
     "• Claude can read, edit, and create files in your project\n" +
@@ -272,6 +273,8 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
   });
 
   bot.command("yolo", async (ctx) => {
+    // Only the owner can toggle yolo mode (especially important in group chats)
+    if (ctx.from?.id !== config.TELEGRAM_OWNER_ID) return;
     const chatId = ctx.chat.id;
     const enabling = !bridge.isYolo(chatId);
     bridge.setYolo(chatId, enabling);
