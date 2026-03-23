@@ -186,6 +186,7 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     "/cost — Show token usage for the current session\n" +
     "/session — Get session ID to continue in CLI\n" +
     "/resume — Resume a CLI session in Telegram\n" +
+    "/commands — List project commands and skills\n" +
     "/cancel — Abort the current operation\n" +
     "/feedback — Send feedback or report an issue\n" +
     "/help — Show this help message\n\n" +
@@ -208,12 +209,41 @@ export function createWorker(botConfig: BotConfig, bridge: ClaudeBridge, tunnelM
     "• Some tools require your approval via Approve/Deny buttons\n" +
     "• Use /cancel if a response is taking too long";
 
+  // Discover project-level .claude/commands/ and .claude/skills/ for help text
+  const projectCommands = bridge.discoverProjectCommands();
+
+  function buildProjectCommandsText(): string {
+    if (projectCommands.length === 0) return "";
+    const lines = projectCommands.map(c => `/${escapeHtml(c.command)} — ${escapeHtml(c.description)}`);
+    return "\n\n<b>Project Commands &amp; Skills:</b>\n" + lines.join("\n") +
+      "\n\n<i>Defined in .claude/commands/ and .claude/skills/, executed by Claude.</i>";
+  }
+
   bot.command("start", async (ctx) => {
-    await ctx.reply(helpText, { parse_mode: "HTML" });
+    await ctx.reply(helpText + buildProjectCommandsText(), { parse_mode: "HTML" });
   });
 
   bot.command("help", async (ctx) => {
-    await ctx.reply(helpText, { parse_mode: "HTML" });
+    await ctx.reply(helpText + buildProjectCommandsText(), { parse_mode: "HTML" });
+  });
+
+  bot.command("commands", async (ctx) => {
+    if (projectCommands.length === 0) {
+      await ctx.reply(
+        "No project commands or skills found.\n\n" +
+          "Add <code>.md</code> files to <code>.claude/commands/</code> or " +
+          "<code>.claude/skills/&lt;name&gt;/SKILL.md</code> in your project to create custom commands.",
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+    const lines = projectCommands.map(c => `<b>/${escapeHtml(c.command)}</b> — ${escapeHtml(c.description)}`);
+    await ctx.reply(
+      `<b>Project commands &amp; skills</b> (${projectCommands.length})\n\n` +
+        lines.join("\n") +
+        "\n\n<i>Type any command to run it. Defined in .claude/commands/ and .claude/skills/</i>",
+      { parse_mode: "HTML" }
+    );
   });
 
   bot.command("new", async (ctx) => {

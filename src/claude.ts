@@ -279,6 +279,62 @@ export class ClaudeBridge {
     return path.join(os.homedir(), ".claude", "projects", projectKey);
   }
 
+  /**
+   * Scan .claude/commands/ and .claude/skills/ in the project working directory
+   * and return discovered custom commands/skills with names and descriptions.
+   *
+   * Commands: .claude/commands/<name>.md
+   * Skills:   .claude/skills/<name>/SKILL.md
+   */
+  discoverProjectCommands(): Array<{ command: string; description: string }> {
+    const results: Array<{ command: string; description: string }> = [];
+    const seen = new Set<string>();
+
+    const addEntry = (name: string, filePath: string, fallbackLabel: string) => {
+      const tgName = name.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 32);
+      if (!tgName || seen.has(tgName)) return;
+      seen.add(tgName);
+
+      let description = `${fallbackLabel}: ${name}`;
+      try {
+        const content = fs.readFileSync(filePath, "utf-8");
+        const firstLine = content.split("\n").find(l => l.trim().length > 0)?.trim();
+        if (firstLine) {
+          const cleaned = firstLine.replace(/^#+\s*/, "");
+          if (cleaned.length > 0 && cleaned.length <= 256) {
+            description = cleaned;
+          }
+        }
+      } catch {}
+      results.push({ command: tgName, description });
+    };
+
+    // Scan .claude/commands/<name>.md
+    const commandsDir = path.join(this.workingDir, ".claude", "commands");
+    try {
+      if (fs.existsSync(commandsDir)) {
+        for (const f of fs.readdirSync(commandsDir).filter(f => f.endsWith(".md"))) {
+          addEntry(f.replace(/\.md$/, ""), path.join(commandsDir, f), "Command");
+        }
+      }
+    } catch {}
+
+    // Scan .claude/skills/<name>/SKILL.md
+    const skillsDir = path.join(this.workingDir, ".claude", "skills");
+    try {
+      if (fs.existsSync(skillsDir)) {
+        for (const dir of fs.readdirSync(skillsDir)) {
+          const skillFile = path.join(skillsDir, dir, "SKILL.md");
+          if (fs.existsSync(skillFile)) {
+            addEntry(dir, skillFile, "Skill");
+          }
+        }
+      }
+    } catch {}
+
+    return results;
+  }
+
   listRecentSessions(limit = 10): Array<{ sessionId: string; modifiedAt: Date; promptPreview: string }> {
     const dir = this.getProjectSessionsDir();
     if (!fs.existsSync(dir)) return [];
@@ -472,6 +528,7 @@ export class ClaudeBridge {
           model,
           includePartialMessages: true,
           permissionMode,
+          settingSources: ['user', 'project', 'local'],
           ...(maxTurns ? { maxTurns } : {}),
           ...(sessionId ? { resume: sessionId } : {}),
           abortController,
