@@ -279,6 +279,41 @@ export class ClaudeBridge {
     return path.join(os.homedir(), ".claude", "projects", projectKey);
   }
 
+  /**
+   * Scan .claude/commands/ in the project working directory and return
+   * discovered custom commands with names and descriptions.
+   */
+  discoverProjectCommands(): Array<{ command: string; description: string }> {
+    const commandsDir = path.join(this.workingDir, ".claude", "commands");
+    if (!fs.existsSync(commandsDir)) return [];
+
+    try {
+      const files = fs.readdirSync(commandsDir).filter(f => f.endsWith(".md"));
+      return files.map(f => {
+        const name = f.replace(/\.md$/, "");
+        // Use first non-empty line of the file as description, fallback to name
+        let description = `Project command: ${name}`;
+        try {
+          const content = fs.readFileSync(path.join(commandsDir, f), "utf-8");
+          const firstLine = content.split("\n").find(l => l.trim().length > 0)?.trim();
+          if (firstLine) {
+            // Strip markdown heading prefix
+            const cleaned = firstLine.replace(/^#+\s*/, "");
+            if (cleaned.length > 0 && cleaned.length <= 256) {
+              description = cleaned;
+            }
+          }
+        } catch {}
+        // Telegram command names: lowercase, digits, underscores only, 1-32 chars
+        const tgName = name.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 32);
+        if (!tgName) return null;
+        return { command: tgName, description };
+      }).filter((c): c is { command: string; description: string } => c !== null);
+    } catch {
+      return [];
+    }
+  }
+
   listRecentSessions(limit = 10): Array<{ sessionId: string; modifiedAt: Date; promptPreview: string }> {
     const dir = this.getProjectSessionsDir();
     if (!fs.existsSync(dir)) return [];
@@ -472,6 +507,7 @@ export class ClaudeBridge {
           model,
           includePartialMessages: true,
           permissionMode,
+          settingSources: ['user', 'project', 'local'],
           ...(maxTurns ? { maxTurns } : {}),
           ...(sessionId ? { resume: sessionId } : {}),
           abortController,
