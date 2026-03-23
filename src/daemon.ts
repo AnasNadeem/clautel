@@ -30,7 +30,7 @@ const WORKER_COMMANDS = [
   { command: "session",    description: "Get session ID to resume in CLI" },
   { command: "resume",     description: "Resume a CLI session in Telegram" },
   { command: "yolo",       description: "Toggle skip-permissions mode" },
-  { command: "commands",   description: "List project custom commands" },
+  { command: "commands",   description: "List project commands and skills" },
   { command: "cancel",     description: "Abort the current operation" },
   { command: "feedback",   description: "Send feedback or report an issue" },
   { command: "help",       description: "Show help" },
