@@ -472,6 +472,7 @@ export class ClaudeBridge {
           model,
           includePartialMessages: true,
           permissionMode,
+          settingSources: ['user', 'project', 'local'],
           ...(maxTurns ? { maxTurns } : {}),
           ...(sessionId ? { resume: sessionId } : {}),
           abortController,
