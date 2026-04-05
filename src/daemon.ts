@@ -29,6 +29,8 @@ const WORKER_COMMANDS = [
   { command: "cost",       description: "Show token usage for this session" },
   { command: "session",    description: "Get session ID to resume in CLI" },
   { command: "resume",     description: "Resume a CLI session in Telegram" },
+  { command: "yolo",       description: "Toggle skip-permissions mode" },
+  { command: "commands",   description: "List project commands and skills" },
   { command: "cancel",     description: "Abort the current operation" },
   { command: "feedback",   description: "Send feedback or report an issue" },
   { command: "help",       description: "Show help" },
@@ -57,7 +59,16 @@ async function startWorker(botConfig: BotConfig): Promise<void> {
   const bot = createWorker(botConfig, bridge, tunnelManager, scheduleManager);
 
   await bot.init();
-  await bot.api.setMyCommands(WORKER_COMMANDS);
+
+  // Merge built-in commands with project-level .claude/commands/
+  const projectCommands = bridge.discoverProjectCommands();
+  const builtinNames = new Set(WORKER_COMMANDS.map(c => c.command));
+  const extraCommands = projectCommands.filter(c => !builtinNames.has(c.command));
+  const allCommands = [...WORKER_COMMANDS, ...extraCommands].slice(0, 100); // TG limit: 100
+  await bot.api.setMyCommands(allCommands);
+  if (extraCommands.length > 0) {
+    console.log(`[${botConfig.username}] Registered ${extraCommands.length} project command(s): ${extraCommands.map(c => "/" + c.command).join(", ")}`);
+  }
 
   addBot(botConfig);
   activeWorkers.set(botConfig.id, { config: botConfig, bot, bridge, tunnelManager });
